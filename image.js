@@ -1,4 +1,4 @@
-// Copyright 2012-2017 (c) Peter Širka <petersirka@gmail.com>
+// Copyright 2012-2018 (c) Peter Širka <petersirka@gmail.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
 // copy of this software and associated documentation files (the
@@ -21,7 +21,7 @@
 
 /**
  * @module FrameworkImage
- * @version 2.5.0
+ * @version 2.9.2
  */
 
 'use strict';
@@ -31,9 +31,10 @@ const child = require('child_process');
 const exec = child.exec;
 const spawn = child.spawn;
 const Fs = require('fs');
-const REGEXP_SVG = /(width=\"\d+\")+|(height=\"\d+\")+/g;
+const REGEXP_SVG = /(width="\d+")+|(height="\d+")+/g;
 const REGEXP_PATH = /\//g;
-const REGEXP_ESCAPE = /\$\(.*?\)|\'/g;
+const REGEXP_ESCAPE = /'/g;
+const D = require('os').platform().substring(0, 3).toLowerCase() === 'win' ? '"' : '\'';
 
 var CACHE = {};
 var middlewares = {};
@@ -116,6 +117,29 @@ exports.measureSVG = function(buffer) {
 	}
 
 	return { width: width, height: height };
+};
+
+exports.measure = function(type, buffer) {
+	switch (type) {
+		case '.jpg':
+		case '.jpeg':
+		case 'jpg':
+		case 'jpeg':
+		case 'image/jpeg':
+			return exports.measureJPG(buffer);
+		case '.gif':
+		case 'gif':
+		case 'image/gif':
+			return exports.measureGIF(buffer);
+		case '.png':
+		case 'png':
+		case 'image/png':
+			return exports.measurePNG(buffer);
+		case '.svg':
+		case 'svg':
+		case 'image/svg+xml':
+			return exports.measureSVG(buffer);
+	}
 };
 
 function Image(filename, useImageMagick, width, height) {
@@ -202,6 +226,7 @@ Image.prototype.save = function(filename, callback, writer) {
 	filename = filename || self.filename || '';
 
 	var command = self.cmd(self.filename ? self.filename : '-', filename);
+
 	if (F.isWindows)
 		command = command.replace(REGEXP_PATH, '\\');
 
@@ -364,7 +389,7 @@ Image.prototype.arg = function(first, last) {
 			arr.push(o.cmd);
 		else {
 			arr.push(o.cmd.substring(0, index));
-			arr.push(o.cmd.substring(index + 1).replace(/\"/g, ''));
+			arr.push(o.cmd.substring(index + 1).replace(/"/g, ''));
 		}
 	}
 
@@ -404,7 +429,7 @@ Image.prototype.push = function(key, value, priority, encode) {
 
 	if (value != null) {
 		if (encode && typeof(value) === 'string')
-			cmd += ' "' + value.replace(REGEXP_ESCAPE, '') + '"';
+			cmd += ' ' + D + value.replace(REGEXP_ESCAPE, '') + D;
 		else
 			cmd += ' ' + value;
 	}
@@ -515,7 +540,7 @@ Image.prototype.extent = function(w, h) {
  * @return {Image}
  */
 Image.prototype.miniature = function(w, h, color, filter) {
-	return this.filter(filter || 'Box').thumbnail(w, h).background(color ? color : 'white').align('center').extent(w, h);
+	return this.filter(filter || 'Hamming').thumbnail(w, h).background(color ? color : 'white').align('center').extent(w, h);
 };
 
 /**
@@ -673,7 +698,7 @@ Image.prototype.sepia = function() {
 };
 
 Image.prototype.watermark = function(filename, x, y, w, h) {
-	return this.push('-draw', 'image over {1},{2} {3},{4} \'{0}\''.format(filename, x || 0, y || 0, w || 0, h || 0), 6, true);
+	return this.push('-draw', 'image over {1},{2} {3},{4} {5}{0}{5}'.format(filename, x || 0, y || 0, w || 0, h || 0, D), 6, true);
 };
 
 Image.prototype.make = function(fn) {
@@ -682,11 +707,17 @@ Image.prototype.make = function(fn) {
 };
 
 Image.prototype.command = function(key, value, priority, esc) {
+
+	if (priority === true) {
+		priority = 0;
+		esc = true;
+	}
+
 	return this.push(key, value, priority || 10, esc);
 };
 
 function wrap(command, empty) {
-	return (empty ? ' ' : '') + command.replace(REGEXP_ESCAPE, '');
+	return (empty ? ' ' : '') + (command === '-' ? command : (D + command.replace(REGEXP_ESCAPE, '') + D));
 }
 
 exports.Image = Image;

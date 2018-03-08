@@ -1,4 +1,4 @@
-// Copyright 2012-2016 (c) Peter Širka <petersirka@gmail.com>
+// Copyright 2012-2018 (c) Peter Širka <petersirka@gmail.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
 // copy of this software and associated documentation files (the
@@ -21,7 +21,7 @@
 
 /**
  * @module FrameworkInternal
- * @version 2.5.0
+ * @version 2.9.2
  */
 
 'use strict';
@@ -45,32 +45,33 @@ const REG_1 = /[\n\r\t]+/g;
 const REG_2 = /\s{2,}/g;
 const REG_4 = /\n\s{2,}./g;
 const REG_5 = />\n\s{1,}</g;
-const REG_6 = /[\<\w\"\u0080-\u07ff\u0400-\u04FF]+\s{2,}[\w\u0080-\u07ff\u0400-\u04FF\>]+/;
+const REG_6 = /[<\w"\u0080-\u07ff\u0400-\u04FF]+\s{2,}[\w\u0080-\u07ff\u0400-\u04FF>]+/;
 const REG_7 = /\\/g;
-const REG_8 = /\'/g;
-const REG_BLOCK_BEG = /\@\{block.*?\}/gi;
-const REG_BLOCK_END = /\@\{end\}/gi;
-const REG_SKIP_1 = /\(\'|\"/;
-const REG_SKIP_2 = /\,(\s)?\w+/;
-const REG_HEAD = /\<\/head\>/i;
-const REG_COMPONENTS = /\@{(\s)?(component|components)(\s)?\(/i;
+const REG_8 = /'/g;
+const REG_BLOCK_BEG = /@\{block.*?\}/i;
+const REG_BLOCK_END = /@\{end\}/i;
+const REG_SKIP_1 = /\('|"/;
+const REG_SKIP_2 = /,(\s)?\w+/;
+const REG_HEAD = /<\/head>/i;
+const REG_COMPONENTS = /@{(\s)?(component|components)(\s)?\(/i;
+const REG_COMPONENTS_GROUP = /('|")[a-z0-9]+('|")/i;
 const HTTPVERBS = { 'get': true, 'post': true, 'options': true, 'put': true, 'delete': true, 'patch': true, 'upload': true, 'head': true, 'trace': true, 'propfind': true };
-const RENDERNOW = ['self.$import(', 'self.route', 'self.$js(', 'self.$css(', 'self.$favicon(', 'self.$script(', '$STRING(self.resource(', '$STRING(self.RESOURCE(', 'self.translate(', 'language', 'self.sitemap_url(', 'self.sitemap_name(', '$STRING(CONFIG(', '$STRING(config.', '$STRING(config[', '$STRING(config('];
+const RENDERNOW = ['self.$import(', 'self.route', 'self.$js(', 'self.$css(', 'self.$favicon(', 'self.$script(', '$STRING(self.resource(', '$STRING(RESOURCE(', 'self.translate(', 'language', 'self.sitemap_url(', 'self.sitemap_name(', '$STRING(CONFIG(', '$STRING(config.', '$STRING(config[', '$STRING(config('];
 const REG_NOTRANSLATE = /@\{notranslate\}/gi;
 const REG_NOCOMPRESS = /@\{nocompress\s\w+}/gi;
-const REG_TAGREMOVE = /[^\>]\n\s{1,}$/;
+const REG_TAGREMOVE = /[^>]\n\s{1,}$/;
 const REG_HELPERS = /helpers\.[a-z0-9A-Z_$]+\(.*?\)+/g;
 const REG_SITEMAP = /\s+(sitemap_navigation\(|sitemap\()+/g;
 const REG_CSS_1 = /\n|\s{2,}/g;
 const REG_CSS_2 = /\s?\{\s{1,}/g;
 const REG_CSS_3 = /\s?\}\s{1,}/g;
-const REG_CSS_4 = /\s?\:\s{1,}/g;
-const REG_CSS_5 = /\s?\;\s{1,}/g;
-const REG_CSS_6 = /\,\s{1,}/g;
+const REG_CSS_4 = /\s?:\s{1,}/g;
+const REG_CSS_5 = /\s?;\s{1,}/g;
+const REG_CSS_6 = /,\s{1,}/g;
 const REG_CSS_7 = /\s\}/g;
 const REG_CSS_8 = /\s\{/g;
-const REG_CSS_9 = /\;\}/g;
-const REG_CSS_10 = /\$[a-z0-9-_]+\:.*?;/gi;
+const REG_CSS_9 = /;\}/g;
+const REG_CSS_10 = /\$[a-z0-9-_]+:.*?;/gi;
 const REG_CSS_11 = /\$[a-z0-9-_]+/gi;
 const AUTOVENDOR = ['filter', 'appearance', 'column-count', 'column-gap', 'column-rule', 'display', 'transform', 'transform-style', 'transform-origin', 'transition', 'user-select', 'animation', 'perspective', 'animation-name', 'animation-duration', 'animation-timing-function', 'animation-delay', 'animation-iteration-count', 'animation-direction', 'animation-play-state', 'opacity', 'background', 'background-image', 'font-smoothing', 'text-size-adjust', 'backface-visibility', 'box-sizing', 'overflow-scrolling'];
 const WRITESTREAM = { flags: 'w' };
@@ -85,14 +86,14 @@ global.$STRING = function(value) {
 
 global.$VIEWCACHE = [];
 
-exports.parseMULTIPART = function(req, contentType, route, tmpDirectory, subscribe) {
+exports.parseMULTIPART = function(req, contentType, route, tmpDirectory) {
 
 	var boundary = contentType.split(';')[1];
 	if (!boundary) {
 		F.reqstats(false, false);
 		F.stats.request.error400++;
-		subscribe.res.writeHead(400);
-		subscribe.res.end();
+		req.res.writeHead(400);
+		req.res.end();
 		return;
 	}
 
@@ -106,6 +107,9 @@ exports.parseMULTIPART = function(req, contentType, route, tmpDirectory, subscri
 	var tmp;
 	var close = 0;
 	var rm;
+	var fn_close = function() {
+		close--;
+	};
 
 	// Replaces the EMPTYARRAY and EMPTYOBJECT in index.js
 	req.files = [];
@@ -123,6 +127,10 @@ exports.parseMULTIPART = function(req, contentType, route, tmpDirectory, subscri
 	parser.initWithBoundary(boundary);
 
 	parser.onPartBegin = function() {
+
+		if (req.buffer_exceeded)
+			return;
+
 		// Temporary data
 		tmp = new HttpFile();
 		tmp.$data = framework_utils.createBufferSize();
@@ -152,6 +160,13 @@ exports.parseMULTIPART = function(req, contentType, route, tmpDirectory, subscri
 		if (tmp.$step !== 0)
 			return;
 
+		// UNKNOWN ERROR, maybe attack
+		if (header.indexOf('form-data; ') === -1) {
+			req.buffer_exceeded = true;
+			!tmp.$is && destroyStream(stream);
+			return;
+		}
+
 		header = parse_multipart_header(header);
 
 		tmp.$step = 1;
@@ -164,12 +179,18 @@ exports.parseMULTIPART = function(req, contentType, route, tmpDirectory, subscri
 		}
 
 		tmp.filename = header[1];
-		tmp.path = path + (INDEXFILE++) + '.bin';
 
-		stream = Fs.createWriteStream(tmp.path, WRITESTREAM);
-		stream.once('close', () => close--);
-		stream.once('error', () => close--);
-		close++;
+		// IE9 sends absolute filename
+		var index = tmp.filename.lastIndexOf('\\');
+
+		// For Unix like senders
+		if (index === -1)
+			index = tmp.filename.lastIndexOf('/');
+
+		if (index !== -1)
+			tmp.filename = tmp.filename.substring(index + 1);
+
+		tmp.path = path + (INDEXFILE++) + '.bin';
 	};
 
 	parser.onPartData = function(buffer, start, end) {
@@ -184,7 +205,6 @@ exports.parseMULTIPART = function(req, contentType, route, tmpDirectory, subscri
 
 		if (size >= maximumSize) {
 			req.buffer_exceeded = true;
-
 			if (rm)
 				rm.push(tmp.path);
 			else
@@ -232,6 +252,10 @@ exports.parseMULTIPART = function(req, contentType, route, tmpDirectory, subscri
 
 		req.files.push(tmp);
 		F.$events['upload-begin'] && F.emit('upload-begin', req, tmp);
+		close++;
+		stream = Fs.createWriteStream(tmp.path, WRITESTREAM);
+		stream.once('close', fn_close);
+		stream.once('error', fn_close);
 		stream.write(data);
 		tmp.length += length;
 	};
@@ -269,11 +293,12 @@ exports.parseMULTIPART = function(req, contentType, route, tmpDirectory, subscri
 	};
 
 	parser.onEnd = function() {
+
 		if (close) {
 			setImmediate(parser.onEnd);
 		} else {
 			rm && F.unlink(rm);
-			subscribe.doEnd();
+			req.$total_end2();
 		}
 	};
 
@@ -531,15 +556,15 @@ exports.routeSplitCreate = function(url, noLower) {
 	return arr;
 };
 
-exports.routeCompare = function(url, route, isSystem, isAsterix) {
+exports.routeCompare = function(url, route, isSystem, isWildcard) {
 
 	var length = url.length;
 	var lengthRoute = route.length;
 
-	if (lengthRoute !== length && !isAsterix)
+	if (lengthRoute !== length && !isWildcard)
 		return false;
 
-	if (isAsterix && lengthRoute === 1 && route[0] === '/')
+	if (isWildcard && lengthRoute === 1 && route[0] === '/')
 		return true;
 
 	var skip = length === 1 && url[0] === '/';
@@ -548,14 +573,14 @@ exports.routeCompare = function(url, route, isSystem, isAsterix) {
 
 		var value = route[i];
 
-		if (!isSystem && isAsterix && value === undefined)
+		if (!isSystem && isWildcard && value === undefined)
 			return true;
 
 		if (!isSystem && (!skip && value[0] === '{'))
 			continue;
 
 		if (url[i] !== value)
-			return isSystem ? false : isAsterix ? i >= lengthRoute : false;
+			return isSystem ? false : isWildcard ? i >= lengthRoute : false;
 	}
 
 	return true;
@@ -751,7 +776,7 @@ function HttpFile() {
 	this.rem = true;
 }
 
-HttpFile.prototype.rename = function(filename, callback) {
+HttpFile.prototype.rename = HttpFile.prototype.move = function(filename, callback) {
 	var self = this;
 	Fs.rename(self.path, filename, function(err) {
 
@@ -782,7 +807,7 @@ HttpFile.prototype.copy = function(filename, callback) {
 	return self;
 };
 
-HttpFile.prototype.$$rename = function(filename) {
+HttpFile.prototype.$$rename = HttpFile.prototype.$$move = function(filename) {
 	var self = this;
 	return function(callback) {
 		return self.rename(filename, callback);
@@ -817,15 +842,21 @@ HttpFile.prototype.md5 = function(callback) {
 	var self = this;
 	var md5 = Crypto.createHash('md5');
 	var stream = Fs.createReadStream(self.path);
+
 	stream.on('data', (buffer) => md5.update(buffer));
 	stream.on('error', function(error) {
-		callback(error, null);
-		callback = null;
+		if (callback) {
+			callback(error, null);
+			callback = null;
+		}
 	});
 
 	onFinished(stream, function() {
 		destroyStream(stream);
-		callback && callback(null, md5.digest('hex'));
+		if (callback) {
+			callback(null, md5.digest('hex'));
+			callback = null;
+		}
 	});
 
 	return self;
@@ -951,16 +982,46 @@ function autoprefixer(value) {
 			continue;
 		}
 
-		if (name === 'background' || name === 'background-image') {
-			if (property.indexOf('linear-gradient') === -1)
-				continue;
-			updated = plus.replacer('linear-', '-webkit-linear-') + delimiter;
-			updated += plus.replacer('linear-', '-moz-linear-') + delimiter;
-			updated += plus.replacer('linear-', '-o-linear-') + delimiter;
-			updated += plus.replacer('linear-', '-ms-linear-') + delimiter;
-			updated += plus;
+		if (name === 'font-smoothing') {
+			updated = plus + delimiter;
+			updated += plus.replacer('font-smoothing', '-webkit-font-smoothing') + delimiter;
+			updated += plus.replacer('font-smoothing', '-moz-osx-font-smoothing');
 			value = value.replacer(property, '@[[' + output.length + ']]');
 			output.push(updated);
+			continue;
+		}
+
+		if (name === 'background' || name === 'background-image') {
+			if (property.indexOf('repeating-linear-gradient') !== -1) {
+				updated = plus.replacer('repeating-linear-', '-webkit-repeating-linear-') + delimiter;
+				updated += plus.replacer('repeating-linear-', '-moz-repeating-linear-') + delimiter;
+				updated += plus.replacer('repeating-linear-', '-ms-repeating-linear-') + delimiter;
+				updated += plus;
+				value = value.replacer(property, '@[[' + output.length + ']]');
+				output.push(updated);
+			} else if (property.indexOf('repeating-radial-gradient') !== -1) {
+				updated = plus.replacer('repeating-radial-', '-webkit-repeating-radial-') + delimiter;
+				updated += plus.replacer('repeating-radial-', '-moz-repeating-radial-') + delimiter;
+				updated += plus.replacer('repeating-radial-', '-ms-repeating-radial-') + delimiter;
+				updated += plus;
+				value = value.replacer(property, '@[[' + output.length + ']]');
+				output.push(updated);
+			} else if (property.indexOf('linear-gradient') !== -1) {
+				updated = plus.replacer('linear-', '-webkit-linear-') + delimiter;
+				updated += plus.replacer('linear-', '-moz-linear-') + delimiter;
+				updated += plus.replacer('linear-', '-ms-linear-') + delimiter;
+				updated += plus;
+				value = value.replacer(property, '@[[' + output.length + ']]');
+				output.push(updated);
+			} else if (property.indexOf('radial-gradient') !== -1) {
+				updated = plus.replacer('radial-', '-webkit-radial-') + delimiter;
+				updated += plus.replacer('radial-', '-moz-radial-') + delimiter;
+				updated += plus.replacer('radial-', '-ms-radial-') + delimiter;
+				updated += plus;
+				value = value.replacer(property, '@[[' + output.length + ']]');
+				output.push(updated);
+			}
+
 			continue;
 		}
 
@@ -989,7 +1050,6 @@ function autoprefixer(value) {
 		if (name.indexOf('animation') === -1)
 			updated += delimiter + '-ms-' + plus;
 
-		updated += delimiter + '-o-' + plus;
 		value = value.replacer(property, '@[[' + output.length + ']]');
 		output.push(updated);
 	}
@@ -1079,7 +1139,7 @@ function minify_javascript(data) {
 	var output = [];
 	var isCS = false;
 	var isCI = false;
-	var alpha = /[0-9a-z\$]/i;
+	var alpha = /[0-9a-z$]/i;
 	var white = /\W/;
 	var skip = { '$': true, '_': true };
 	var regexp = false;
@@ -1297,6 +1357,7 @@ function MultipartParser() {
 	this.index = null;
 	this.flags = 0;
 }
+
 exports.MultipartParser = MultipartParser;
 
 MultipartParser.stateToString = function(stateNumber) {
@@ -1575,13 +1636,43 @@ function view_parse_localization(content, language) {
 		return content;
 
 	while (command) {
+
 		if (command)
-			output += content.substring(end ? end + 1 : 0, command.beg) + F.translate(language, command.command);
+			output += content.substring(end ? end + 1 : 0, command.beg) + (command.command ? localize(language, command) : '');
+
 		end = command.end;
 		command = view_find_localization(content, command.end);
 	}
 
 	output += content.substring(end + 1);
+	return output;
+}
+
+// Escaping ", ' and ` chars
+function localize(language, command) {
+
+	!language && (language = 'default');
+
+	if (F.resources[language] && F.resources[language].$empty)
+		return command.command;
+
+	var output = F.translate(language, command.command);
+
+	if (command.escape) {
+		var index = 0;
+		while (true) {
+			index = output.indexOf(command.escape, index);
+			if (index === -1)
+				break;
+			var c = output[index - 1];
+			if (c !== '\\') {
+				output = output.substring(0, index) + '\\' + output.substring(index);
+				index++;
+			} else
+				index += 2;
+		}
+	}
+
 	return output;
 }
 
@@ -1631,6 +1722,9 @@ function view_parse(content, minify, filename, controller) {
 
 	content = F.$versionprepare(content);
 
+	if (!nocompressHTML)
+		content = compressView(content, minify, filename);
+
 	var DELIMITER = '\'';
 	var SPACE = ' ';
 	var builder = 'var $EMPTY=\'\';var $length=0;var $source=null;var $tmp=index;var $output=$EMPTY';
@@ -1640,7 +1734,9 @@ function view_parse(content, minify, filename, controller) {
 	var index = 0;
 
 	if ((controller.$hasComponents || REG_COMPONENTS.test(content)) && REG_HEAD.test(content)) {
+
 		index = content.indexOf('@{import(');
+
 		var add = true;
 		while (index !== -1) {
 			var str = content.substring(index, content.indexOf(')', index));
@@ -1650,17 +1746,30 @@ function view_parse(content, minify, filename, controller) {
 			} else
 				index = content.indexOf('@{import(', index + str.length);
 		}
-		if (add)
-			content = content.replace(REG_HEAD, text => F.components.links + text);
+
+		if (add && controller.$hasComponents) {
+			if (controller.$hasComponents instanceof Array) {
+				content = content.replace(REG_HEAD, function(text) {
+					var str = '';
+					for (var i = 0; i < controller.$hasComponents.length; i++) {
+						var group = F.components.groups[controller.$hasComponents[i]];
+						if (group)
+							str += group.links;
+					}
+					return str + text;
+				});
+			} else
+				content = content.replace(REG_HEAD, text => F.components.links + text);
+		}
 	}
 
 	function escaper(value) {
 
 		var is = REG_TAGREMOVE.test(value);
 
-		if (!nocompressHTML)
-			value = compressHTML(value, minify, true);
-		else if (!isFirst) {
+		if (!nocompressHTML) {
+		//	value = compressHTML(value, minify, true);
+		} else if (!isFirst) {
 			isFirst = true;
 			value = value.replace(/^\s+/, '');
 		}
@@ -1729,13 +1838,19 @@ function view_parse(content, minify, filename, controller) {
 			continue;
 		}
 
-		cmd = cmd.replace(REG_HELPERS, function(text) {
+		// cmd = cmd.replace
+		command.command = command.command.replace(REG_HELPERS, function(text) {
 			var index = text.indexOf('(');
 			return index === - 1 ? text : text.substring(0, index) + '.call(self' + (text.endsWith('()') ? ')' : ',' + text.substring(index + 1));
 		});
 
 		if (cmd[0] === '\'' || cmd[0] === '"') {
-			builder += '+' + DELIMITER + (new Function('self', 'return self.$import(' + cmd[0] + '!' + cmd.substring(1) + ')'))(controller) + DELIMITER;
+			if (cmd[1] === '%') {
+				var t = F.config[cmd.substring(2, cmd.length - 1)];
+				if (t != null)
+					builder += '+' + DELIMITER + t + DELIMITER;
+			} else
+				builder += '+' + DELIMITER + (new Function('self', 'return self.$import(' + cmd[0] + '!' + cmd.substring(1) + ')'))(controller) + DELIMITER;
 		} else if (cmd7 === 'compile' && cmd.lastIndexOf(')') === -1) {
 
 			builderTMP = builder + '+(F.onCompileView.call(self,\'' + (cmd8[7] === ' ' ? cmd.substring(8) : '') + '\',';
@@ -1823,7 +1938,7 @@ function view_parse(content, minify, filename, controller) {
 							var isMeta = tmp.indexOf('\'meta\'') !== -1;
 							var isHead = tmp.indexOf('\'head\'') !== -1;
 							var isComponent = tmp.indexOf('\'components\'') !== -1;
-							tmp = tmp.replace(/\'(meta|head|components)\'\,/g, '').replace(/(\,\,|\,\)|\s{1,})/g, '');
+							tmp = tmp.replace(/'(meta|head|components)',/g, '').replace(/(,,|,\)|\s{1,})/g, '');
 							if (isMeta || isHead || isComponent) {
 								var tmpimp = '';
 								if (isMeta)
@@ -1879,9 +1994,9 @@ function view_parse(content, minify, filename, controller) {
 	}
 
 	if (RELEASE)
-		builder = builder.replace(/(\+\$EMPTY\+)/g, '+').replace(/(\$output\=\$EMPTY\+)/g, '$output=').replace(/(\$output\+\=\$EMPTY\+)/g, '$output+=').replace(/(\}\$output\+\=\$EMPTY)/g, '}').replace(/(\{\$output\+\=\$EMPTY\;)/g, '{').replace(/(\+\$EMPTY\+)/g, '+').replace(/(\>\'\+\'\<)/g, '><').replace(/\'\+\'/g, '');
+		builder = builder.replace(/(\+\$EMPTY\+)/g, '+').replace(/(\$output=\$EMPTY\+)/g, '$output=').replace(/(\$output\+=\$EMPTY\+)/g, '$output+=').replace(/(\}\$output\+=\$EMPTY)/g, '}').replace(/(\{\$output\+=\$EMPTY;)/g, '{').replace(/(\+\$EMPTY\+)/g, '+').replace(/(>'\+'<)/g, '><').replace(/'\+'/g, '');
 
-	var fn = '(function(self,repository,model,session,query,body,url,global,helpers,user,config,functions,index,output,cookie,files,mobile,settings){var get=query;var post=body;var theme=this.themeName;var language=this.language;var cookie=function(name){return controller.req.cookie(name);};' + (functions.length ? functions.join('') + ';' : '') + 'var controller=self;' + builder + ';return $output;})';
+	var fn = '(function(self,repository,model,session,query,body,url,global,helpers,user,config,functions,index,output,cookie,files,mobile,settings){var get=query;var post=body;var G=F.global;var R=this.repository;var M=model;var theme=this.themeName;var language=this.language;var sitemap=this.repository.$sitemap;var cookie=function(name){return self.req.cookie(name)};' + (functions.length ? functions.join('') + ';' : '') + 'var controller=self;' + builder + ';return $output;})';
 	try {
 		fn = eval(fn);
 	} catch (e) {
@@ -1941,7 +2056,7 @@ function view_prepare(command, dynamicCommand, functions, controller) {
 
 		case 'section':
 			tmp = command.indexOf('(');
-			return tmp === -1 ? '' : '(repository[\'$section_' + command.substring(tmp + 1, command.length - 1).replace(/\'|\"/g, '') + '\'] || \'\')';
+			return tmp === -1 ? '' : '(repository[\'$section_' + command.substring(tmp + 1, command.length - 1).replace(/'|"/g, '') + '\'] || \'\')';
 
 		case 'log':
 		case 'LOG':
@@ -1959,6 +2074,9 @@ function view_prepare(command, dynamicCommand, functions, controller) {
 		case '!isomorphic':
 			return '$STRING(' + command + ')';
 
+		case 'M':
+		case 'R':
+		case 'G':
 		case 'model':
 		case 'repository':
 		case 'get':
@@ -1969,12 +2087,10 @@ function view_prepare(command, dynamicCommand, functions, controller) {
 		case 'user':
 		case 'config':
 		case 'controller':
-			return view_is_assign(command) ? 'self.$set(' + command + ')' : '$STRING(' + command + ').encode()';
+			return view_is_assign(command) ? ('self.$set(' + command + ')') : ('$STRING(' + command + ').encode()');
 
 		case 'body':
-			if (view_is_assign(command))
-				return 'self.$set(' + command + ')';
-			return command.lastIndexOf('.') === -1 ? 'output' : '$STRING(' + command + ').encode()';
+			return view_is_assign(command) ? ('self.$set(' + command + ')') : command.lastIndexOf('.') === -1 ? 'output' : ('$STRING(' + command + ').encode()');
 
 		case 'files':
 		case 'mobile':
@@ -1996,6 +2112,9 @@ function view_prepare(command, dynamicCommand, functions, controller) {
 		case 'functions':
 			return '$STRING(' + command + ').encode()';
 
+		case '!M':
+		case '!R':
+		case '!G':
 		case '!controller':
 		case '!repository':
 		case '!get':
@@ -2018,11 +2137,12 @@ function view_prepare(command, dynamicCommand, functions, controller) {
 		case 'resource':
 			return '$STRING(self.' + command + ').encode()';
 		case 'RESOURCE':
-			return '$STRING(self.' + command.toLowerCase() + ').encode()';
+			return '$STRING(' + command + ').encode()';
 
 		case '!resource':
-		case '!RESOURCE':
 			return '$STRING(self.' + command.substring(1) + ')';
+		case '!RESOURCE':
+			return '$STRING(' + command.substring(1) + ')';
 
 		case 'host':
 		case 'hostname':
@@ -2073,7 +2193,18 @@ function view_prepare(command, dynamicCommand, functions, controller) {
 			return 'self.$' + command + (command.indexOf('(') === -1 ? '()' : '');
 
 		case 'components':
-			controller.$hasComponents = true;
+
+			if (!controller.$hasComponents)
+				controller.$hasComponents = [];
+
+			if (controller.$hasComponents instanceof Array) {
+				var group = command.match(REG_COMPONENTS_GROUP);
+				if (group && group.length) {
+					group = group[0].toString().replace(/'|"'/g, '');
+					controller.$hasComponents.indexOf(group) === -1 && controller.$hasComponents.push(group);
+				}
+			}
+
 			return 'self.$' + command + (command.indexOf('(') === -1 ? '()' : '');
 
 		case 'index':
@@ -2098,6 +2229,7 @@ function view_prepare(command, dynamicCommand, functions, controller) {
 		case 'json':
 		case 'sitemap_change':
 		case 'sitemap_replace':
+		case 'sitemap_add':
 		case 'helper':
 		case 'view':
 		case 'layout':
@@ -2272,6 +2404,8 @@ function view_find_localization(content, index) {
 
 	var length = content.length;
 	var count = 0;
+	var beg = content[index - 1];
+	var esc = '';
 
 	for (var i = index + 2; i < length; i++) {
 		var c = content[i];
@@ -2288,11 +2422,10 @@ function view_find_localization(content, index) {
 			continue;
 		}
 
-		return {
-			beg: index,
-			end: i,
-			command: content.substring(index + 2, i).trim()
-		};
+		var end = content.substring(i + 1, i + 2);
+		if (beg === end && beg === '"' || beg === '\'' || beg === '`')
+			esc = beg;
+		return { beg: index, end: i, command: content.substring(index + 2, i).trim(), escape: esc };
 	}
 
 	return null;
@@ -2320,6 +2453,28 @@ function removeComments(html) {
 	}
 
 	return html;
+}
+
+function compressView(html, minify) {
+
+	var cache = [];
+
+	while (true) {
+		var beg = html.indexOf('@{');
+		if (beg === -1)
+			break;
+		var end = html.indexOf('}', beg + 2);
+		if (end === -1)
+			break;
+		cache.push(html.substring(beg, end + 1));
+		html = html.substring(0, beg) + '#@' + (cache.length - 1) + '#' + html.substring(end + 1);
+	}
+
+	html = compressHTML(html, minify, false);
+
+	return html.replace(/#@\d+#/g, function(text) {
+		return cache[+text.substring(2, text.length - 1)];
+	});
 }
 
 /**
@@ -2920,173 +3075,85 @@ exports.parseURI = function(req) {
 function destroyStream(stream) {
 	if (stream instanceof ReadStream) {
 		stream.destroy();
-		if (typeof(stream.close) !== 'function')
-			return stream;
-		stream.on('open', function() {
+		typeof(stream.close) === 'function' && stream.on('open', function() {
 			typeof(this.fd) === 'number' && this.close();
 		});
-		return stream;
-	}
-	stream instanceof Stream && typeof(stream.destroy) === 'function' && stream.destroy();
+	} else if (stream instanceof Stream)
+		typeof(stream.destroy) === 'function' && stream.destroy();
 	return stream;
 }
 
-/*
- * ee-first (first, listener)
- * Copyright(c) 2014 Jonathan Ong <me@jongleberry.com>
- * MIT Licensed
- * https://github.com/jonathanong/ee-first
- */
-function first(stuff, done) {
-	var cleanups = [];
-	for (var i = 0, il = stuff.length; i < il; i++) {
-		var arr = stuff[i];
-		var ee = arr[0];
-		for (var j = 1, jl = arr.length; j < jl; j++) {
-			var event = arr[j];
-			var fn = listener(event, callback);
-			ee.on(event, fn);
-			cleanups.push({ ee: ee, event: event, fn: fn });
-		}
+function isFinished(stream) {
+
+	// Response & Request
+	if (stream.socket) {
+		if (stream.writable && (!stream.socket._writableState || stream.socket._writableState.finished || stream.socket._writableState.destroyed))
+			return true;
+		if (stream.readable && (!stream.socket._readableState|| stream.socket._writableState.ended || stream.socket._readableState.destroyed))
+			return true;
+		return false;
 	}
 
-	function callback() {
-		cleanup();
-		done.apply(null, arguments);
-	}
+	if (stream._readableState && (stream._readableState.ended || stream._readableState.destroyed))
+		return true;
 
-	function cleanup() {
-		var x;
-		for (var i = 0, length = cleanups.length; i < length; i++) {
-			x = cleanups[i];
-			x.ee.removeListener(x.event, x.fn);
-		}
-	}
+	if (stream._writableState && (stream._writableState.finished || stream._writableState.destroyed))
+		return true;
 
-	function thunk(fn) {
-		done = fn;
-	}
-
-	thunk.cancel = cleanup;
-	return thunk;
+	return false;
 }
 
-function listener(event, done) {
-	return function(arg1) {
-		var args = new Array(arguments.length);
-		var ee = this;
-		var err = event === 'error' ? arg1 : null;
+function onFinished(stream, fn) {
 
-		// copy args to prevent arguments escaping scope
-		for (var i = 0; i < args.length; i++)
-			args[i] = arguments[i];
-
-		done(err, ee, event, args);
-	};
-}
-
-/*
- * on-finished (onFinished, attachFinishedListener, attachListener, createListener, patchAssignSocket, isFinished)
- * Copyright(c) 2013 Jonathan Ong <me@jongleberry.com>
- * Copyright(c) 2014 Douglas Christopher Wilson <doug@somethingdoug.com>
- * MIT Licensed
- * https://github.com/jshttp/on-finished
- */
-function onFinished(msg, listener) {
-	if (isFinished(msg) !== false)
-		setImmediate(listener, null, msg);
-	else
-		attachListener(msg, listener);
-	return msg;
-}
-
-function attachFinishedListener(msg, callback) {
-	var eeMsg;
-	var eeSocket;
-	var finished = false;
-
-	function onFinish(err) {
-		eeMsg.cancel();
-		eeSocket.cancel();
-		finished = true;
-		callback(err);
-	}
-
-	// finished on first message event
-	eeMsg = eeSocket = first([[msg, 'end', 'finish']], onFinish);
-
-	function onSocket(socket) {
-		// remove listener
-		msg.removeListener('socket', onSocket);
-
-		if (finished || eeMsg !== eeSocket)
-			return;
-
-		// finished on first socket event
-		eeSocket = first([[socket, 'error', 'close']], onFinish);
-	}
-
-	// socket already assigned
-	if (msg.socket) {
-		onSocket(msg.socket);
+	if (stream.$onFinished) {
+		fn && fn();
+		fn = null;
 		return;
 	}
 
-	// wait for socket to be assigned
-	msg.on('socket', onSocket);
-
-	// node.js 0.8 patch
-	!msg.socket && patchAssignSocket(msg, onSocket);
-}
-
-function attachListener(msg, listener) {
-	var attached = msg.__onFinished;
-
-	// create a private single listener with queue
-	if (!attached || !attached.queue) {
-		attached = msg.__onFinished = createListener(msg);
-		attachFinishedListener(msg, attached);
-	}
-
-	attached.queue.push(listener);
-}
-
-function createListener(msg) {
-	function listener(err) {
-		if (msg.__onFinished === listener)
-			msg.__onFinished = null;
-		if (!listener.queue)
-			return;
-		var queue = listener.queue;
-		listener.queue = null;
-		for (var i = 0, length = queue.length; i < length; i++)
-			queue[i](err, msg);
-	}
-	listener.queue = [];
-	return listener;
-}
-
-function patchAssignSocket(res, callback) {
-	var assignSocket = res.assignSocket;
-	if (typeof(assignSocket) !== 'function')
+	if (stream.$onFinishedQueue) {
+		if (stream.$onFinishedQueue instanceof Array)
+			stream.$onFinishedQueue.push(fn);
+		else
+			stream.$onFinishedQueue = [stream.$onFinishedQueue, fn];
 		return;
-	// res.on('socket', callback) is broken in 0.8
-	res.assignSocket = function(socket) {
-		assignSocket.call(this, socket);
-		callback(socket);
+	} else
+		stream.$onFinishedQueue = fn;
+
+	var callback = function() {
+		!stream.$onFinished && (stream.$onFinished = true);
+		if (stream.$onFinishedQueue instanceof Array) {
+			while (stream.$onFinishedQueue.length)
+				stream.$onFinishedQueue.shift()();
+			stream.$onFinishedQueue = null;
+		} else if (stream.$onFinishedQueue) {
+			stream.$onFinishedQueue();
+			stream.$onFinishedQueue = null;
+		}
 	};
-}
 
-function isFinished(msg) {
-	var socket = msg.socket;
+	if (isFinished(stream)) {
+		setImmediate(callback);
+	} else {
 
-	// OutgoingMessage
-	if (typeof msg.finished === 'boolean')
-		return Boolean(msg.finished || (socket && !socket.writable));
+		if (stream.socket) {
+			if (!stream.socket.$totalstream) {
+				stream.socket.$totalstream = stream;
+				stream.socket.prependListener('error', callback);
+				stream.socket.prependListener('close', callback);
+			}
+		}
 
-	// IncomingMessage
-	if (typeof msg.complete === 'boolean')
-		return Boolean(msg.upgrade || !socket || !socket.readable || (msg.complete && !msg.readable));
+		stream.prependListener('error', callback);
+		stream.prependListener('end', callback);
+		stream.prependListener('close', callback);
+		stream.prependListener('aborted', callback);
+		stream.prependListener('finish', callback);
+
+		//stream.uri --> determines ServerRespone
+		// stream.uri && stream.prependListener('aborted', callback);
+		// (stream._writableState || stream.uri) && stream.prependListener('finish', callback);
+	}
 }
 
 exports.encodeUnicodeURL = function(url) {
@@ -3105,7 +3172,7 @@ exports.parseBlock = function(name, content) {
 	//
 	// @{end}
 
-	if (content.search(REG_BLOCK_BEG) === -1)
+	if (!REG_BLOCK_BEG.test(content))
 		return content;
 
 	var newline = '\n';
@@ -3123,7 +3190,7 @@ exports.parseBlock = function(name, content) {
 		if (!line)
 			continue;
 
-		if (line.search(REG_BLOCK_END) !== -1) {
+		if (REG_BLOCK_END.test(line)) {
 			is = false;
 			skip = false;
 			continue;
@@ -3137,9 +3204,6 @@ exports.parseBlock = function(name, content) {
 		}
 
 		var index = line.search(REG_BLOCK_BEG);
-		if (!index)
-			continue;
-
 		if (index === -1) {
 			builder += line + newline;
 			continue;
@@ -3162,7 +3226,7 @@ exports.parseBlock = function(name, content) {
 
 function existsSync(filename) {
 	try {
-		return Fs.statSync(filename) ? true : false;
+		return !!Fs.statSync(filename);
 	} catch (e) {
 		return false;
 	}
@@ -3173,6 +3237,8 @@ exports.restart = function() {
 	INDEXFILE = 0;
 };
 
+global.HttpFile = HttpFile;
+exports.HttpFile = HttpFile;
 exports.viewEngineCompile = viewengine_dynamic;
 exports.viewEngine = viewengine_load;
 exports.parseLocalization = view_parse_localization;

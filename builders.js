@@ -1,4 +1,4 @@
-// Copyright 2012-2017 (c) Peter Širka <petersirka@gmail.com>
+// Copyright 2012-2018 (c) Peter Širka <petersirka@gmail.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
 // copy of this software and associated documentation files (the
@@ -21,7 +21,7 @@
 
 /**
  * @module FrameworkBuilders
- * @version 2.5.0
+ * @version 2.9.3
  */
 
 'use strict';
@@ -30,8 +30,8 @@ const REQUIRED = 'The field "@" is invalid.';
 const DEFAULT_SCHEMA = 'default';
 const SKIP = { $$schema: true, $$result: true, $$callback: true, $$async: true, $$index: true, $$repository: true, $$can: true, $$controller: true };
 const REGEXP_CLEAN_EMAIL = /\s/g;
-const REGEXP_CLEAN_PHONE = /\s|\.|\-|\(|\)/g;
-const REGEXP_NEWOPERATION = /^function(\s)?\([a-zA-Z0-9\$]+\)/g;
+const REGEXP_CLEAN_PHONE = /\s|\.|-|\(|\)/g;
+const REGEXP_NEWOPERATION = /^(async\s)?function(\s)?\([a-zA-Z0-9$]+\)|^function anonymous\(\$/;
 const hasOwnProperty = Object.prototype.hasOwnProperty;
 const Qs = require('querystring');
 
@@ -52,8 +52,79 @@ function SchemaOptions(error, model, options, callback, controller) {
 	this.controller = controller;
 }
 
-SchemaOptions.prototype.throw = function(name, error, path, index) {
+SchemaOptions.prototype = {
+
+	get user() {
+		return this.controller ? this.controller.user : null;
+	},
+
+	get session() {
+		return this.controller ? this.controller.session : null;
+	},
+
+	get language() {
+		return (this.controller ? this.controller.language : '') || '';
+	},
+
+	get ip() {
+		return this.controller ? this.controller.ip : null;
+	},
+
+	get id() {
+		return this.controller ? this.controller.id : null;
+	},
+
+	get params() {
+		return this.controller ? this.controller.params : null;
+	},
+
+	get files() {
+		return this.controller ? this.controller.files : null;
+	},
+
+	get body() {
+		return this.controller ? this.controller.body : null;
+	},
+
+	get query() {
+		return this.controller ? this.controller.query : null;
+	}
+};
+
+SchemaOptions.prototype.DB = function() {
+	return F.database(this.error);
+};
+
+SchemaOptions.prototype.success = function(a, b) {
+
+	if (a && b === undefined && typeof(a) !== 'boolean') {
+		b = a;
+		a = true;
+	}
+
+	this.callback(SUCCESS(a === undefined ? true : a, b));
+	return this;
+};
+
+SchemaOptions.prototype.done = function(arg) {
+	var self = this;
+	return function(err, response) {
+
+		if (err && !(err instanceof ErrorBuilder)) {
+			self.error.push(err);
+			self.callback();
+		}
+
+		if (arg)
+			self.callback(SUCCESS(err == null, response));
+		else
+			self.callback(SUCCESS(err == null));
+	};
+};
+
+SchemaOptions.prototype.invalid = function(name, error, path, index) {
 	this.error.push(name, error, path, index);
+	this.callback();
 	return this;
 };
 
@@ -110,6 +181,7 @@ function SchemaBuilderEntity(parent, name) {
 	this.schema = {};
 	this.meta = {};
 	this.properties = [];
+	this.inherits = [];
 	this.resourcePrefix;
 	this.resourceName;
 	this.transforms;
@@ -118,7 +190,9 @@ function SchemaBuilderEntity(parent, name) {
 	this.operations;
 	this.constants;
 	this.onPrepare;
+	this.$onPrepare; // Array of functions for inherits
 	this.onDefault;
+	this.$onDefault; // Array of functions for inherits
 	this.onValidate = F.onValidate;
 	this.onSave;
 	this.onGet;
@@ -149,6 +223,42 @@ SchemaBuilderEntity.prototype.allow = function() {
 	return self;
 };
 
+SchemaBuilderEntity.prototype.required = function(name, fn) {
+
+	var self = this;
+
+	if (!name)
+		return self;
+
+	if (name.indexOf(',') !== -1) {
+		var arr = name.split(',');
+		for (var i = 0; i < arr.length; i++)
+			self.required(arr[i].trim(), fn);
+		return self;
+	}
+
+	if (fn === false) {
+		self.properties && (self.properties = self.properties.remove(name));
+		return self;
+	}
+
+	var prop = self.schema[name];
+	if (!prop)
+		throw new Error('Property "{0}" doesn\'t exist in "{1}" schema.'.format(name, self.name));
+
+	prop.can = typeof(fn) === 'function' ? fn : null;
+
+	if (!prop.required) {
+		prop.required = true;
+		if (self.properties) {
+			self.properties.indexOf(name) === -1 && self.properties.push(name);
+		} else
+			self.properties = [name];
+	}
+
+	return self;
+};
+
 /**
  * Define type in schema
  * @param {String|String[]} name
@@ -165,7 +275,9 @@ SchemaBuilderEntity.prototype.define = function(name, type, required, custom) {
 		return this;
 	}
 
-	if (required !== undefined && typeof(required) !== 'boolean') {
+	var rt = typeof(required);
+
+	if (required !== undefined && rt === 'string') {
 		custom = required;
 		required = false;
 	}
@@ -174,25 +286,113 @@ SchemaBuilderEntity.prototype.define = function(name, type, required, custom) {
 		type = type.name;
 
 	this.schema[name] = this.$parse(name, type, required, custom);
+
 	switch (this.schema[name].type) {
 		case 7:
-			if (!this.dependencies)
-				this.dependencies = [];
-			this.dependencies.push(name);
+			if (this.dependencies)
+				this.dependencies.push(name);
+			else
+				this.dependencies = [name];
 			break;
 	}
 
 	this.fields = Object.keys(this.schema);
 
-	if (!required)
-		return this;
+	if (required) {
+		if (this.properties == null)
+			this.properties = [];
+		this.properties.indexOf(name) === -1 && this.properties.push(name);
+	}
 
-	if (this.properties == null)
-		this.properties = [];
-
-	this.properties.indexOf(name) === -1 && this.properties.push(name);
 	return this;
 };
+
+SchemaBuilderEntity.prototype.inherit = function(group, name) {
+
+	if (!name) {
+		name = group;
+		group = DEFAULT_SCHEMA;
+	}
+
+	var self = this;
+
+	exports.getschema(group, name, function(err, schema) {
+
+		if (err)
+			throw err;
+
+		self.primary = schema.primary;
+		self.inherits.push(schema);
+
+		if (!self.resourceName && schema.resourceName)
+			self.resourceName = schema.resourceName;
+
+		if (!self.resourcePrefix && schema.resourcePrefix)
+			self.resourcePrefix = schema.resourcePrefix;
+
+		copy_inherit(self, 'schema', schema.schema);
+		copy_inherit(self, 'meta', schema.meta);
+		copy_inherit(self, 'transforms', schema.transforms);
+		copy_inherit(self, 'workflows', schema.workflows);
+		copy_inherit(self, 'hooks', schema.hooks);
+		copy_inherit(self, 'operations', schema.operations);
+		copy_inherit(self, 'constants', schema.constants);
+
+		schema.properties.forEach(function(item) {
+			self.properties.indexOf(item) === -1 && self.properties.push(item);
+		});
+
+		if (schema.onPrepare) {
+			if (!self.$onPrepare)
+				self.$onPrepare = [];
+			self.$onPrepare.push(schema.onPrepare);
+		}
+
+		if (schema.onDefault) {
+			if (!self.$onDefault)
+				self.$onDefault = [];
+			self.$onDefault.push(schema.onDefault);
+		}
+
+		if (self.onValidate === F.onValidate && self.onValidate !== schema.onValidate)
+			self.onValidate = schema.onValidate;
+
+		if (!self.onSave && schema.onSave)
+			self.onSave = schema.onSave;
+
+		if (!self.onGet && schema.onGet)
+			self.onGet = schema.onGet;
+
+		if (!self.onRemove && schema.onRemove)
+			self.onRemove = schema.onRemove;
+
+		if (!self.onQuery && schema.onQuery)
+			self.onQuery = schema.onQuery;
+
+		if (!self.onError && schema.onError)
+			self.onError = schema.onError;
+
+		self.fields = Object.keys(self.schema);
+	});
+
+	return self;
+};
+
+function copy_inherit(schema, field, value) {
+
+	if (!value)
+		return;
+
+	if (value && !schema[field]) {
+		schema[field] = framework_utils.clone(value);
+		return;
+	}
+
+	Object.keys(value).forEach(function(key) {
+		if (schema[field][key] === undefined)
+			schema[field][key] = framework_utils.clone(value[key]);
+	});
+}
 
 /**
  * Set primary key
@@ -272,10 +472,10 @@ SchemaBuilderEntity.prototype.filter = function(custom, model, reverse) {
 function parseLength(lower, result) {
 	result.raw = 'string';
 	var beg = lower.indexOf('(');
-	if (beg === -1)
-		return result;
-	result.length = lower.substring(beg + 1, lower.length - 1).parseInt();
-	result.raw = lower.substring(0, beg);
+	if (beg !== -1) {
+		result.length = lower.substring(beg + 1, lower.length - 1).parseInt();
+		result.raw = lower.substring(0, beg);
+	}
 	return result;
 }
 
@@ -288,6 +488,8 @@ SchemaBuilderEntity.prototype.$parse = function(name, value, required, custom) {
 	result.type = 0;
 	result.length = 0;
 	result.required = required ? true : false;
+	result.validate = typeof(required) === 'function' ? required : null;
+	result.can = null;
 	result.isArray = false;
 	result.custom = custom || '';
 
@@ -370,24 +572,24 @@ SchemaBuilderEntity.prototype.$parse = function(name, value, required, custom) {
 		return result;
 	}
 
-	if (lower.contains(['string', 'text', 'varchar', 'nvarchar'])) {
+	if ((/^(string|text)+(\(\d+\))?$/).test(lower)) {
 		result.type = 3;
 		return parseLength(lower, result);
 	}
 
-	if (lower.indexOf('capitalize') !== -1 || lower.indexOf('camel') !== -1) {
+	if ((/^(capitalize|camelcase|camelize)+(\(\d+\))?$/).test(lower)) {
 		result.type = 3;
 		result.subtype = 'capitalize';
 		return parseLength(lower, result);
 	}
 
-	if (lower.indexOf('lower') !== -1) {
+	if ((/^(lower|lowercase)+(\(\d+\))?$/).test(lower)) {
 		result.subtype = 'lowercase';
 		result.type = 3;
 		return parseLength(lower, result);
 	}
 
-	if (lower.indexOf('upper') !== -1) {
+	if ((/^(upper|uppercase)+(\(\d+\))?$/).test(lower)) {
 		result.subtype = 'uppercase';
 		result.type = 3;
 		return parseLength(lower, result);
@@ -440,22 +642,22 @@ SchemaBuilderEntity.prototype.$parse = function(name, value, required, custom) {
 		return result;
 	}
 
-	if (lower.contains(['int', 'byte'])) {
+	if (['int', 'integer', 'byte'].indexOf(lower) !== -1) {
 		result.type = 1;
 		return result;
 	}
 
-	if (lower.contains(['decimal', 'number', 'float', 'double'])) {
+	if (['decimal', 'number', 'float', 'double'].indexOf(lower) !== -1) {
 		result.type = 2;
 		return result;
 	}
 
-	if (lower.indexOf('bool') !== -1) {
+	if (['bool', 'boolean'].indexOf(lower) !== -1) {
 		result.type = 4;
 		return result;
 	}
 
-	if (lower.contains(['date', 'time'])) {
+	if (['date', 'time', 'datetime'].indexOf(lower) !== -1) {
 		result.type = 5;
 		return result;
 	}
@@ -707,6 +909,7 @@ SchemaBuilderEntity.prototype.destroy = function() {
 	this.properties = undefined;
 	this.schema = undefined;
 	this.onDefault = undefined;
+	this.$onDefault = undefined;
 	this.onValidate = undefined;
 	this.onSave = undefined;
 	this.onRead = undefined;
@@ -722,6 +925,7 @@ SchemaBuilderEntity.prototype.destroy = function() {
 	this.hooks = undefined;
 	this.constants = undefined;
 	this.onPrepare = undefined;
+	this.$onPrepare = undefined;
 	this.onError = undefined;
 	this.gcache = undefined;
 	this.dependencies = undefined;
@@ -767,6 +971,9 @@ SchemaBuilderEntity.prototype.save = function(model, options, callback, controll
 			callback(err, model);
 			return;
 		}
+
+		if (model && !controller && model.$$controller)
+			controller = model.$$controller;
 
 		var builder = new ErrorBuilder();
 		self.resourceName && builder.setResource(self.resourceName);
@@ -1072,6 +1279,7 @@ SchemaBuilderEntity.prototype.validate = function(model, resourcePrefix, resourc
 
 	framework_utils.validate_builder.call(self, model, builder, self.name, self.parent.collection, self.name, index, filter, path);
 
+	/*
 	if (!self.dependencies)
 		return builder;
 
@@ -1081,19 +1289,25 @@ SchemaBuilderEntity.prototype.validate = function(model, resourcePrefix, resourc
 		var s = self.parent.collection[schema.raw];
 
 		if (!s) {
-			F.error(new Error('Schema "' + schema.raw + '" not found (validation).'));
+			F.error(new Error('Schema "{0}" not found (validation).'.format(schema.raw)));
 			continue;
 		}
 
-		if (!schema.isArray) {
-			(model[key] != null || schema.required) && s.validate(model[key], resourcePrefix, resourceName, builder, filter, path + key, j);
-			continue;
-		}
 
-		var arr = model[key];
-		for (var j = 0, jl = arr.length; j < jl; j++)
-			(model[key][j] != null || schema.required) && s.validate(model[key][j], resourcePrefix, resourceName, builder, filter, path + key + '[' + j + ']', j);
+		if (schema.isArray) {
+			var arr = model[key];
+			for (var j = 0, jl = arr.length; j < jl; j++) {
+				if (model[key][j] != null || schema.required) {
+					if (!schema.can || schema.can(model))
+						s.validate(model[key][j], resourcePrefix, resourceName, builder, filter, path + key + '[' + j + ']', j);
+				}
+			}
+		} else if (model[key] != null || schema.required) {
+			if (!schema.can || schema.can(model))
+				s.validate(model[key], resourcePrefix, resourceName, builder, filter, path + key, -1);
+		}
 	}
+	*/
 
 	return builder;
 };
@@ -1138,15 +1352,15 @@ SchemaBuilderEntity.prototype.default = function() {
 	if (obj === null)
 		return null;
 
-	var defaults = this.onDefault;
 	var item = new this.CurrentSchemaInstance();
+	var defaults = this.onDefault || this.$onDefault ? true : false;
 
 	for (var property in obj) {
 
 		var type = obj[property];
 
 		if (defaults) {
-			var def = defaults(property, true, this.name);
+			var def = this.$ondefault(property, true, this.name);
 			if (def !== undefined) {
 				item[property] = def;
 				continue;
@@ -1184,11 +1398,12 @@ SchemaBuilderEntity.prototype.default = function() {
 					item[property] = [];
 				} else {
 					var tmp = this.find(type.raw);
-					if (!tmp) {
+					if (tmp) {
+						item[property] = tmp.default();
+					} else {
 						F.error(new Error('Schema: "' + property + '.' + type.raw + '" not found in "' + this.parent.name + '".'));
 						item[property] = null;
-					} else
-						item[property] = tmp.default();
+					}
 				}
 				break;
 			// enum + keyvalue
@@ -1223,6 +1438,7 @@ SchemaBuilderEntity.prototype.make = function(model, filter, callback, argument,
 	}
 
 	var output = this.prepare(model);
+
 	if (novalidate) {
 		callback && callback(null, output, argument);
 		return output;
@@ -1246,11 +1462,40 @@ function autotrim(context, value) {
 }
 
 SchemaBuilderEntity.prototype.$onprepare = function(name, value, index, model) {
-	if (this.onPrepare) {
-		var val = this.onPrepare(name, value, index, model);
-		return val === undefined ? value : val;
+
+	var val = value;
+
+	if (this.$onPrepare) {
+		for (var i = 0, length = this.$onPrepare.length; i < length; i++) {
+			var tmp = this.$onPrepare[i](name, val, index, model);
+			if (tmp !== undefined)
+				val = tmp;
+		}
 	}
-	return value;
+
+	if (this.onPrepare)
+		val = this.onPrepare(name, val, index, model);
+
+	return val === undefined ? value : val;
+};
+
+SchemaBuilderEntity.prototype.$ondefault = function(property, create, entity) {
+
+	var val;
+
+	if (this.onDefault) {
+		val = this.onDefault(property, create, entity);
+		if (val !== undefined)
+			return val;
+	}
+
+	if (this.$onDefault) {
+		for (var i = 0, length = this.$onDefault.length; i < length; i++) {
+			val = this.$onDefault[i](property, create, entity);
+			if (val !== undefined)
+				return val;
+		}
+	}
 };
 
 /**
@@ -1273,7 +1518,7 @@ SchemaBuilderEntity.prototype.prepare = function(model, dependencies) {
 	var tmp;
 	var entity;
 	var item = new self.CurrentSchemaInstance();
-	var defaults = self.onDefault;
+	var defaults = self.onDefault || self.$onDefault ? true : false;
 
 	for (var property in obj) {
 
@@ -1284,7 +1529,7 @@ SchemaBuilderEntity.prototype.prepare = function(model, dependencies) {
 			val = undefined;
 
 		if (val === undefined && defaults)
-			val = defaults(property, false, self.name);
+			val = self.$ondefault(property, false, self.name);
 
 		if (val === undefined)
 			val = '';
@@ -1296,6 +1541,7 @@ SchemaBuilderEntity.prototype.prepare = function(model, dependencies) {
 			val = val();
 
 		if (!type.isArray) {
+
 			switch (type.type) {
 				// undefined
 				case 0:
@@ -1311,7 +1557,16 @@ SchemaBuilderEntity.prototype.prepare = function(model, dependencies) {
 
 				// string
 				case 3:
-					tmp = val == null ? '' : autotrim(self, val.toString());
+
+					var tv = typeof(val);
+
+					if (val == null || tv === 'object')
+						tmp = '';
+					else if (tv === 'string')
+						tmp = autotrim(self, val);
+					else
+						tmp = autotrim(self, val.toString());
+
 					if (type.length && type.length < tmp.length)
 						tmp = tmp.substring(0, type.length);
 
@@ -1378,7 +1633,7 @@ SchemaBuilderEntity.prototype.prepare = function(model, dependencies) {
 					if (framework_utils.isDate(tmp))
 						tmp = self.$onprepare(property, tmp, undefined, model);
 					else
-						tmp = (defaults ? isUndefined(defaults(property, false, self.name), null) : null);
+						tmp = (defaults ? isUndefined(self.$ondefault(property, false, self.name), null) : null);
 
 					item[property] = tmp;
 					break;
@@ -1406,7 +1661,7 @@ SchemaBuilderEntity.prototype.prepare = function(model, dependencies) {
 				case 7:
 
 					if (!val) {
-						val = (defaults ? isUndefined(defaults(property, false, self.name), null) : null);
+						val = (defaults ? isUndefined(self.$ondefault(property, false, self.name), null) : null);
 						// val = defaults(property, false, self.name);
 						if (val === null) {
 							item[property] = null;
@@ -1435,7 +1690,7 @@ SchemaBuilderEntity.prototype.prepare = function(model, dependencies) {
 
 		// ARRAY:
 		if (!(val instanceof Array)) {
-			item[property] = (defaults ? isUndefined(defaults(property, false, self.name), []) : []);
+			item[property] = (defaults ? isUndefined(self.$ondefault(property, false, self.name), []) : []);
 			continue;
 		}
 
@@ -1460,6 +1715,7 @@ SchemaBuilderEntity.prototype.prepare = function(model, dependencies) {
 					break;
 
 				case 3:
+
 					tmp = tmp == null ? '' : autotrim(self, tmp.toString());
 					if (type.length && tmp.length < tmp.length)
 						tmp = tmp.substring(0, type.length);
@@ -1671,6 +1927,9 @@ SchemaBuilderEntity.prototype.hook = function(name, model, options, callback, sk
 		return self;
 	}
 
+	if (model && !controller && model.$$controller)
+		controller = model.$$controller;
+
 	var $type = 'hook';
 
 	if (skip === true) {
@@ -1800,6 +2059,9 @@ SchemaBuilderEntity.prototype.$execute = function(type, name, model, options, ca
 		callback(new ErrorBuilder().push('', type.capitalize() + ' "{0}" not found.'.format(name)));
 		return self;
 	}
+
+	if (model && !controller && model.$$controller)
+		controller = model.$$controller;
 
 	if (skip === true) {
 		var builder = new ErrorBuilder();
@@ -1932,6 +2194,9 @@ SchemaBuilderEntity.prototype.operation = function(name, model, options, callbac
 
 	self.resourceName && builder.setResource(self.resourceName);
 	self.resourcePrefix && builder.setPrefix(self.resourcePrefix);
+
+	if (model && !controller && model.$$controller)
+		controller = model.$$controller;
 
 	if (!isGenerator(self, 'operation.' + name, operation)) {
 		if (operation.$newversion) {
@@ -2132,7 +2397,7 @@ SchemaInstance.prototype.$callback = function(callback) {
 	return this;
 };
 
-SchemaInstance.prototype.$output = function() {
+SchemaInstance.prototype.$response = SchemaInstance.prototype.$output = function() {
 	this.$$index = this.$$result.length;
 	return this;
 };
@@ -2142,7 +2407,7 @@ SchemaInstance.prototype.$push = function(type, name, helper, first) {
 	var self = this;
 	var fn;
 
-	if (type === 'save' || type === 'remove') {
+	if (type === 'save') {
 
 		helper = name;
 		name = undefined;
@@ -2159,7 +2424,7 @@ SchemaInstance.prototype.$push = function(type, name, helper, first) {
 			}, self.$$controller);
 		};
 
-	} else if (type === 'query' || type === 'get' || type === 'read') {
+	} else if (type === 'query' || type === 'get' || type === 'read' || type === 'remove') {
 
 		helper = name;
 		name = undefined;
@@ -2177,7 +2442,6 @@ SchemaInstance.prototype.$push = function(type, name, helper, first) {
 		};
 
 	} else {
-
 		fn = function(next) {
 			self.$$schema[type](name, self, helper, function(err, result) {
 				self.$$result && self.$$result.push(err ? null : copy(result));
@@ -2189,7 +2453,6 @@ SchemaInstance.prototype.$push = function(type, name, helper, first) {
 				self.$$callback = null;
 			}, self.$$controller);
 		};
-
 	}
 
 	if (first)
@@ -2216,10 +2479,15 @@ SchemaInstance.prototype.$exec = function(name, helper, callback) {
 	var workflow = F.workflows[key + '#' + name] || F.workflows[name];
 
 	if (workflow)
-		workflow(this, helper || EMPTYOBJECT, callback || NOOP);
+		workflow(this, helper, callback || NOOP);
 	else
 		callback && callback(new ErrorBuilder().push('Workflow "' + name + '" not found in workflows.'));
 
+	return this;
+};
+
+SchemaInstance.prototype.$controller = function(controller) {
+	this.$$controller = controller;
 	return this;
 };
 
@@ -2232,12 +2500,10 @@ SchemaInstance.prototype.$save = function(helper, callback) {
 };
 
 SchemaInstance.prototype.$query = function(helper, callback) {
-
 	if (this.$$can && this.$$async)
 		this.$push('query', helper);
 	else
 		this.$$schema.query(this, helper, callback, this.$$controller);
-
 	return this;
 };
 
@@ -2251,7 +2517,7 @@ SchemaInstance.prototype.$read = SchemaInstance.prototype.$get = function(helper
 	return this;
 };
 
-SchemaInstance.prototype.$remove = function(helper, callback) {
+SchemaInstance.prototype.$delete = SchemaInstance.prototype.$remove = function(helper, callback) {
 
 	if (this.$$can && this.$$async)
 		this.$push('remove', helper);
@@ -2352,6 +2618,7 @@ function ErrorBuilder(onResource) {
 	this.replacer = [];
 	this.isPrepared = false;
 	this.contentType = 'application/json';
+	this.status = F.config['default-errorbuilder-status'] || 200;
 
 	// Hidden: when the .push() contains a classic Error instance
 	// this.unexpected;
@@ -2379,7 +2646,7 @@ exports.isSchema = function(obj) {
 	return obj instanceof SchemaInstance;
 };
 
-exports.eachschema = function(group, fn) {
+global.EACHSCHEMA = exports.eachschema = function(group, fn) {
 
 	if (fn === undefined) {
 		fn = group;
@@ -2405,8 +2672,13 @@ exports.getschema = function(group, name, fn, timeout) {
 		group = DEFAULT_SCHEMA;
 	}
 
-	if (fn)
-		return framework_utils.wait(() => schemas[group], err => fn(err, schemas[group]), timeout || 20000);
+	if (fn) {
+		framework_utils.wait(function() {
+			var g = schemas[group];
+			return g && g.get(name) ? true : false;
+		}, err => fn(err, schemas[group].get(name)), timeout || 20000);
+		return;
+	}
 
 	var g = schemas[group];
 	return g ? g.get(name) : undefined;
@@ -2436,6 +2708,12 @@ exports.remove = function(group, name) {
 		g && g.remove(name);
 	} else
 		delete schemas[group];
+};
+
+global.EACHOPERATION = function(fn) {
+	var keys = Object.keys(operations);
+	for (var i = 0, length = keys.length; i < length; i++)
+		fn(keys[i]);
 };
 
 /**
@@ -2507,6 +2785,7 @@ exports.validate = function(name, model, resourcePrefix, resourceName) {
 	if (schema === undefined)
 		return null;
 	schema = schema.get(name);
+	model = schema.prepare(model);
 	return schema === undefined ? null : schema.validate(model, resourcePrefix, resourceName);
 };
 
@@ -2612,7 +2891,7 @@ ErrorBuilder.prototype._resource = function() {
 
 ErrorBuilder.prototype._resource_handler = function(name) {
 	var self = this;
-	return typeof(framework) !== 'undefined' ? F.resource(self.resourceName || 'default', self.resourcePrefix + name) : '';
+	return typeof(F) !== 'undefined' ? F.resource(self.resourceName || 'default', name) : '';
 };
 
 ErrorBuilder.prototype.exception = function(message) {
@@ -2640,7 +2919,8 @@ ErrorBuilder.prototype.add = function(name, error, path, index) {
  * @param {Number} index Array Index, optional.
  * @return {ErrorBuilder}
  */
-ErrorBuilder.prototype.push = function(name, error, path, index) {
+ErrorBuilder.prototype.push = function(name, error, path, index, prefix) {
+
 	this.isPrepared = false;
 
 	if (name instanceof ErrorBuilder) {
@@ -2654,13 +2934,13 @@ ErrorBuilder.prototype.push = function(name, error, path, index) {
 
 	if (name instanceof Array) {
 		for (var i = 0, length = name.length; i < length; i++)
-			this.push(name[i], undefined, path, index);
+			this.push(name[i], undefined, path, index, prefix);
 		return this;
 	}
 
 	if (error instanceof Array) {
 		for (var i = 0, length = error.length; i < length; i++)
-			this.push(name, error[i], path, index);
+			this.push(name, error[i], path, index, prefix);
 		return this;
 	}
 
@@ -2673,6 +2953,15 @@ ErrorBuilder.prototype.push = function(name, error, path, index) {
 	if (error === null || (!name && !error))
 		return this;
 
+	// Status code
+	if (error > 0) {
+		this.status = error;
+		error = '@';
+	} else if (path > 0) {
+		this.status = path;
+		path = undefined;
+	}
+
 	if (!error)
 		error = '@';
 
@@ -2682,7 +2971,7 @@ ErrorBuilder.prototype.push = function(name, error, path, index) {
 		error = error.toString();
 	}
 
-	this.items.push({ name: name, error: typeof(error) === 'string' ? error : error.toString(), path: path, index: index });
+	this.items.push({ name: name, error: typeof(error) === 'string' ? error : error.toString(), path: path, index: index, prefix: prefix });
 	this.count = this.items.length;
 	return this;
 };
@@ -2782,11 +3071,12 @@ ErrorBuilder.prototype._prepare = function() {
 	for (var i = 0, length = arr.length; i < length; i++) {
 
 		var o = arr[i];
+
 		if (o.error[0] !== '@')
 			continue;
 
 		if (o.error.length === 1)
-			o.error = this.onResource(o.name);
+			o.error = this.onResource(o.prefix ? o.prefix : (this.resourcePrefix + o.name));
 		else
 			o.error = this.onResource(o.error.substring(1));
 
@@ -2811,15 +3101,18 @@ ErrorBuilder.prototype._transform = function(name) {
 	return this.items;
 };
 
-ErrorBuilder.prototype.output = function() {
+ErrorBuilder.prototype.output = function(isResponse) {
+
 	if (!this.transformName)
-		return this.json();
+		return isResponse ? this.json() : this.items;
+
 	var current = transforms['error'][this.transformName];
 	if (current) {
 		this.prepare();
-		return current.call(this);
+		return current.call(this, isResponse);
 	}
-	return this.json();
+
+	return isResponse ? this.json() : this.items;
 };
 
 /**
@@ -3410,14 +3703,17 @@ function async_wait(arr, onItem, onCallback, index) {
 }
 
 function RESTBuilder(url) {
+
 	this.$url = url;
-	this.$headers = { 'User-Agent': 'Total.js/v' + F.version_header, Accept: 'application/json, text/plain, text/plain, text/xml' };
+	this.$headers = { 'user-agent': 'Total.js/v' + F.version_header, accept: 'application/json, text/plain, text/plain, text/xml' };
 	this.$method = 'get';
 	this.$timeout = 10000;
 	this.$type = 0; // 0 = query, 1 = json, 2 = urlencode, 3 = raw
 	this.$schema;
 	this.$length = 0;
 	this.$transform = transforms['restbuilder_default'];
+	this.$files = null;
+	this.$persistentcookies = false;
 
 	// this.$flags;
 	// this.$data = {};
@@ -3463,6 +3759,15 @@ RESTBuilder.prototype.url = function(url) {
 	return this;
 };
 
+RESTBuilder.prototype.file = function(name, filename, buffer) {
+	var obj = { name: name, filename: filename, buffer: buffer };
+	if (this.$files)
+		this.$files.push(obj);
+	else
+		this.$files = [obj];
+	return this;
+};
+
 RESTBuilder.prototype.maketransform = function(obj, data) {
 	if (this.$transform) {
 		var fn = transforms['restbuilder'][this.$transform];
@@ -3489,6 +3794,8 @@ RESTBuilder.prototype.auth = function(user, password) {
 
 RESTBuilder.prototype.schema = function(group, name) {
 	this.$schema = exports.getschema(group, name);
+	if (!this.$schema)
+		throw Error('RESTBuilder: Schema "{0}" not found.'.format(name ? (group + '/' + name) : group));
 	return this;
 };
 
@@ -3526,6 +3833,22 @@ RESTBuilder.prototype.referer = RESTBuilder.prototype.referrer = function(value)
 
 RESTBuilder.prototype.origin = function(value) {
 	this.$headers['Origin'] = value;
+	return this;
+};
+
+RESTBuilder.prototype.robot = function() {
+	if (this.$headers['User-Agent'])
+		this.$headers['User-Agent'] += ' Bot';
+	else
+		this.$headers['User-Agent'] = 'Bot';
+	return this;
+};
+
+RESTBuilder.prototype.mobile = function() {
+	if (this.$headers['User-Agent'])
+		this.$headers['User-Agent'] += ' iPhone';
+	else
+		this.$headers['User-Agent'] = 'iPhone';
 	return this;
 };
 
@@ -3626,9 +3949,19 @@ RESTBuilder.prototype.raw = function(value) {
 	return this;
 };
 
+RESTBuilder.prototype.cook = function(value) {
+	this.$flags = null;
+	this.$persistentcookies = value !== false;
+	return this;
+};
+
+RESTBuilder.prototype.cookies = function(obj) {
+	this.$cookies = obj;
+	return this;
+};
+
 RESTBuilder.prototype.cookie = function(name, value) {
-	if (!this.$cookies)
-		this.$cookies = {};
+	!this.$cookies && (this.$cookies = {});
 	this.$cookies[name] = value;
 	return this;
 };
@@ -3672,6 +4005,7 @@ RESTBuilder.prototype.stream = function(callback) {
 
 	if (!self.$flags) {
 		!self.$nodnscache && flags.push('dnscache');
+		self.$persistentcookies && flags.push('cookies');
 		switch (self.$type) {
 			case 1:
 				flags.push('json');
@@ -3692,23 +4026,33 @@ RESTBuilder.prototype.exec = function(callback) {
 		callback = NOOP;
 
 	var self = this;
+
+	if (self.$files && self.$method === 'get')
+		self.$method = 'post';
+
 	var flags = self.$flags ? self.$flags : [self.$method];
 	var key;
 
 	if (!self.$flags) {
 
 		!self.$nodnscache && flags.push('dnscache');
+		self.$persistentcookies && flags.push('cookies');
 		self.$length && flags.push('<' + self.$length);
 		self.$redirect === false && flags.push('noredirect');
 
-		switch (self.$type) {
-			case 1:
-				flags.push('json');
-				break;
-			case 3:
-				flags.push('xml');
-				break;
+		if (self.$files) {
+			flags.push('upload');
+		} else {
+			switch (self.$type) {
+				case 1:
+					flags.push('json');
+					break;
+				case 3:
+					flags.push('xml');
+					break;
+			}
 		}
+
 		self.$flags = flags;
 	}
 
@@ -3718,7 +4062,7 @@ RESTBuilder.prototype.exec = function(callback) {
 		if (data) {
 			var evt = new framework_utils.EventEmitter2();
 			process.nextTick(exec_removelisteners, evt);
-			callback(null, self.maketransform(this.$schema ? this.$schema.make(data.json) : data.json, data), data);
+			callback(null, self.maketransform(this.$schema ? this.$schema.make(data.value) : data.value, data), data);
 			return evt;
 		}
 	}
@@ -3728,7 +4072,20 @@ RESTBuilder.prototype.exec = function(callback) {
 		var type = err ? '' : headers['content-type'] || '';
 		var output = new RESTBuilderResponse();
 
-		output.value = type.indexOf('/xml') === -1 ? response.isJSON() ? F.onParseJSON(response) : F.onParseQuery(response) : response.parseXML();
+		switch (type.toLowerCase()) {
+			case 'text/xml':
+				output.value = response.parseXML();
+				break;
+			case 'application/x-www-form-urlencoded':
+				output.value = F.onParseQuery(response);
+				break;
+			case 'application/json':
+				output.value = response.parseJSON(true);
+				break;
+			default:
+				output.value = response.isJSON() ? response.parseJSON(true) : null;
+				break;
+		}
 
 		if (output.value == null)
 			output.value = EMPTYOBJECT;
@@ -3758,7 +4115,7 @@ RESTBuilder.prototype.exec = function(callback) {
 		callback(err, self.maketransform(output.value, output), output);
 		output.cache = true;
 
-	}, self.$cookies, self.$headers, undefined, self.$timeout);
+	}, self.$cookies, self.$headers, undefined, self.$timeout, self.$files);
 };
 
 function exec_removelisteners(evt) {
@@ -3802,6 +4159,13 @@ function $decodeURIComponent(value) {
 }
 
 global.NEWOPERATION = function(name, fn) {
+
+	// Remove operation
+	if (fn == null) {
+		delete operations[name];
+		return this;
+	}
+
 	operations[name] = fn;
 	operations[name].$owner = F.$owner();
 	operations[name].$newversion = REGEXP_NEWOPERATION.test(fn.toString());
@@ -3810,7 +4174,7 @@ global.NEWOPERATION = function(name, fn) {
 
 global.OPERATION = function(name, value, callback, param) {
 
-	if (callback === undefined) {
+	if (typeof(value) === 'function') {
 		callback = value;
 		value = EMPTYOBJECT;
 	}
@@ -3820,29 +4184,83 @@ global.OPERATION = function(name, value, callback, param) {
 
 	if (fn) {
 		if (fn.$newversion) {
-			var opt = {};
-			opt.error = error;
-			opt.value = opt.model = value;
-			opt.callback = function(value) {
-				if (value instanceof Error) {
-					error.push(value);
-					value = EMPTYOBJECT;
-				}
-				callback(error.hasError() ? error : null, value, param);
-			};
-			fn(opt);
+			var self = new OperationOptions(error, value, param);
+			if (callback && callback !== NOOP) {
+				self.callback = function(value) {
+					if (arguments.length > 1) {
+						if (value instanceof Error || (value instanceof ErrorBuilder && value.hasError())) {
+							self.error.push(value);
+							value = EMPTYOBJECT;
+						} else
+							value = arguments[1];
+					} else if (value instanceof Error || (value instanceof ErrorBuilder && value.hasError())) {
+						self.error.push(value);
+						value = EMPTYOBJECT;
+					}
+
+					callback(self.error.hasError() ? self.error : null, value, self.options);
+					return self;
+				};
+			} else
+				self.callback = NOOP;
+			fn(self);
 		} else
 			fn(error, value, function(value) {
-				if (value instanceof Error) {
-					error.push(value);
-					value = EMPTYOBJECT;
+				if (callback) {
+					if (value instanceof Error) {
+						error.push(value);
+						value = EMPTYOBJECT;
+					}
+					callback(error.hasError() ? error : null, value, param);
 				}
-				callback(error.hasError() ? error : null, value, param);
 			});
 	} else {
 		error.push('Operation "{0}" not found.'.format(name));
-		callback(error, EMPTYOBJECT, param);
+		callback && callback(error, EMPTYOBJECT, param);
 	}
+};
+
+function OperationOptions(error, value, options) {
+	this.model = this.value = value;
+	this.error = error;
+	this.options = options;
+}
+
+OperationOptions.prototype.DB = function() {
+	return F.database(this.error);
+};
+
+OperationOptions.prototype.done = function(arg) {
+	var self = this;
+	return function(err, response) {
+
+		if (err && !(err instanceof ErrorBuilder)) {
+			self.error.push(err);
+			self.callback();
+		}
+
+		if (arg)
+			self.callback(SUCCESS(err == null, response));
+		else
+			self.callback(SUCCESS(err == null));
+	};
+};
+
+OperationOptions.prototype.success = function(a, b) {
+
+	if (a && b === undefined && typeof(a) !== 'boolean') {
+		b = a;
+		a = true;
+	}
+
+	this.callback(SUCCESS(a === undefined ? true : a, b));
+	return this;
+};
+
+OperationOptions.prototype.invalid = function(name, error, path, index) {
+	this.error.push(name, error, path, index);
+	this.callback();
+	return this;
 };
 
 // ======================================================
@@ -3856,7 +4274,11 @@ exports.Pagination = Pagination;
 exports.Page = Page;
 exports.UrlBuilder = UrlBuilder;
 exports.TransformBuilder = TransformBuilder;
+exports.SchemaOptions = SchemaOptions;
+exports.OperationOptions = OperationOptions;
+exports.RESTBuilderResponse = RESTBuilderResponse;
 global.RESTBuilder = RESTBuilder;
+global.RESTBuilderResponse = RESTBuilderResponse;
 global.ErrorBuilder = ErrorBuilder;
 global.TransformBuilder = TransformBuilder;
 global.Pagination = Pagination;

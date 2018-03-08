@@ -1,4 +1,4 @@
-// Copyright 2012-2017 (c) Peter Širka <petersirka@gmail.com>
+// Copyright 2012-2018 (c) Peter Širka <petersirka@gmail.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
 // copy of this software and associated documentation files (the
@@ -21,7 +21,7 @@
 
 /**
  * @module FrameworkUtils
- * @version 2.5.0
+ * @version 2.9.2
  */
 
 'use strict';
@@ -36,26 +36,30 @@ const Fs = require('fs');
 const Events = require('events');
 const Crypto = require('crypto');
 const CONCAT = [null, null];
+const COMPARER = global.Intl ? global.Intl.Collator().compare : function(a, b) {
+	return a.removeDiacritics().localeCompare(b.removeDiacritics());
+};
 
 if (!global.framework_utils)
 	global.framework_utils = exports;
 
 var regexpSTATIC = /\.\w{2,8}($|\?)+/;
 const regexpTRIM = /^[\s]+|[\s]+$/g;
-const regexpDATE = /(\d{1,2}\.\d{1,2}\.\d{4})|(\d{4}\-\d{1,2}\-\d{1,2})|(\d{1,2}\:\d{1,2}(\:\d{1,2})?)/g;
+const regexpDATE = /(\d{1,2}\.\d{1,2}\.\d{4})|(\d{4}-\d{1,2}-\d{1,2})|(\d{1,2}:\d{1,2}(:\d{1,2})?)/g;
 const regexpDATEFORMAT = /yyyy|yy|M+|d+|HH|H|hh|h|mm|m|ss|s|a|ww|w/g;
 const regexpSTRINGFORMAT = /\{\d+\}/g;
 const regexpPATH = /\\/g;
 const regexpTags = /<\/?[^>]+(>|$)/g;
 const regexpDiacritics = /[^\u0000-\u007e]/g;
-const regexpXML = /\w+\=\".*?\"/g;
+const regexpXML = /\w+=".*?"/g;
 const regexpDECODE = /&#?[a-z0-9]+;/g;
 const regexpPARAM = /\{{2}[^}\n]*\}{2}/g;
-const regexpINTEGER = /(^\-|\s-)?[0-9]+/g;
-const regexpFLOAT = /(^\-|\s-)?[0-9\.\,]+/g;
+const regexpARG = /\{[^}\n]*\}/g;
+const regexpINTEGER = /(^-|\s-)?[0-9]+/g;
+const regexpFLOAT = /(^-|\s-)?[0-9.,]+/g;
 const regexpALPHA = /^[A-Za-z0-9]+$/;
 const regexpSEARCH = /[^a-zA-Zá-žÁ-Ž\d\s:]/g;
-const regexpDECRYPT = /\-|\_/g;
+const regexpDECRYPT = /-|_/g;
 const regexpENCRYPT = /\/|\+/g;
 const regexpUNICODE = /\\u([\d\w]{4})/gi;
 const regexpTERMINAL = /[\w\S]+/g;
@@ -63,8 +67,6 @@ const SOUNDEX = { a: '', e: '', i: '', o: '', u: '', b: 1, f: 1, p: 1, v: 1, c: 
 const ENCODING = 'utf8';
 const NEWLINE = '\r\n';
 const isWindows = require('os').platform().substring(0, 3).toLowerCase() === 'win';
-const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const DIACRITICSMAP = {};
 const STREAM_READONLY = { flags: 'r' };
 const STREAM_END = { end: false };
@@ -72,6 +74,10 @@ const ALPHA_INDEX = { '&lt': '<', '&gt': '>', '&quot': '"', '&apos': '\'', '&amp
 const EMPTYARRAY = [];
 const EMPTYOBJECT = [];
 const NODEVERSION = parseFloat(process.version.toString().replace('v', '').replace(/\./g, ''));
+const STREAMPIPE = { end: false };
+
+exports.MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+exports.DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 Object.freeze(EMPTYARRAY);
 Object.freeze(EMPTYOBJECT);
@@ -167,7 +173,9 @@ var CONTENTTYPES = {
 	'zip': 'application/zip'
 };
 
+var persistentcookies = {};
 var dnscache = {};
+var datetimeformat = {};
 const hasOwnProperty = Object.prototype.hasOwnProperty;
 
 /**
@@ -411,7 +419,7 @@ exports.keywords = function(content, forSearch, alternative, max_count, max_leng
  * @param  {Number} timeout Request timeout.
  * return {Boolean}
  */
-exports.request = function(url, flags, data, callback, cookies, headers, encoding) {
+exports.request = function(url, flags, data, callback, cookies, headers, encoding, timeout, files) {
 
 	// No data (data is optional argument)
 	if (typeof(data) === 'function') {
@@ -426,9 +434,10 @@ exports.request = function(url, flags, data, callback, cookies, headers, encodin
 	if (callback === NOOP)
 		callback = null;
 
-	var options = { length: 0, timeout: 10000, evt: new EventEmitter2(), encoding: typeof(encoding) !== 'string' ? ENCODING : encoding, callback: callback, post: false, redirect: 0 };
+	var options = { length: 0, timeout: timeout || 10000, evt: new EventEmitter2(), encoding: typeof(encoding) !== 'string' ? ENCODING : encoding, callback: callback, post: false, redirect: 0 };
 	var method;
 	var type = 0;
+	var isCookies = false;
 
 	if (headers)
 		headers = exports.extend({}, headers);
@@ -492,7 +501,11 @@ exports.request = function(url, flags, data, callback, cookies, headers, encodin
 					break;
 
 				case 'upload':
-					headers['Content-Type'] = 'multipart/form-data';
+					type = 4;
+					options.upload = true;
+					options.files = files || EMPTYARRAY;
+					options.boundary = '----totaljs' + Math.random().toString(16).substring(2);
+					headers['Content-Type'] = 'multipart/form-data; boundary=' + options.boundary;
 					break;
 
 				case 'post':
@@ -502,8 +515,13 @@ exports.request = function(url, flags, data, callback, cookies, headers, encodin
 					method = flags[i].toUpperCase();
 					!headers['Content-Type'] && (headers['Content-Type'] = 'application/x-www-form-urlencoded');
 					break;
+
 				case 'dnscache':
 					options.resolve = true;
+					break;
+
+				case 'cookies':
+					isCookies = true;
 					break;
 			}
 		}
@@ -514,7 +532,7 @@ exports.request = function(url, flags, data, callback, cookies, headers, encodin
 	else
 		method = 'GET';
 
-	if (type !== 3) {
+	if (type < 3) {
 		if (typeof(data) !== 'string')
 			data = type === 1 ? JSON.stringify(data) : Qs.stringify(data);
 		else if (data[0] === '?')
@@ -526,12 +544,15 @@ exports.request = function(url, flags, data, callback, cookies, headers, encodin
 		}
 	}
 
-	if (data) {
+	if (data && type !== 4) {
 		options.data = data instanceof Buffer ? data : exports.createBuffer(data, ENCODING);
 		headers['Content-Length'] = options.data.length;
-	}
+	} else
+		options.data = data;
 
 	if (cookies) {
+		if (isCookies)
+			options.cookies = cookies;
 		var builder = '';
 		for (var m in cookies)
 			builder += (builder ? '; ' : '') + m + '=' + cookies[m];
@@ -584,8 +605,51 @@ function request_call(uri, options) {
 	});
 
 	req.on('response', (response) => response.req = req);
-	req.end(options.data);
+
+	if (options.upload) {
+		options.first = true;
+		options.files.wait(function(file, next) {
+			// next();
+			request_writefile(req, options, file, next);
+		}, function() {
+
+			var keys = Object.keys(options.data);
+			for (var i = 0, length = keys.length; i < length; i++) {
+				var value = options.data[keys[i]];
+				if (value != null) {
+					req.write((options.first ? '' : NEWLINE) + '--' + options.boundary + NEWLINE + 'Content-Disposition: form-data; name="' + keys[i] + '"' + NEWLINE + NEWLINE + encodeURIComponent(value.toString()));
+					if (options.first)
+						options.first = false;
+				}
+			}
+
+			req.end(NEWLINE + '--' + options.boundary + '--');
+		});
+	} else
+		req.end(options.data);
 }
+
+function request_writefile(req, options, file, next) {
+
+	var type = typeof(file.buffer);
+	var filename = (type === 'string' ? file.buffer : exports.getName(file.filename));
+
+	req.write((options.first ? '' : NEWLINE) + '--' + options.boundary + NEWLINE + 'Content-Disposition: form-data; name="' + file.name + '"; filename="' + filename + '"' + NEWLINE + 'Content-Type: ' + exports.getContentType(exports.getExtension(filename)) + NEWLINE + NEWLINE);
+
+	if (options.first)
+		options.first = false;
+
+	// Is Buffer
+	if (file.buffer && type === 'object') {
+		req.write(file.buffer);
+		next();
+	} else {
+		var stream = Fs.createReadStream(file.filename);
+		stream.once('close', next);
+		stream.pipe(req, STREAMPIPE);
+	}
+}
+
 
 function request_response(res, uri, options) {
 
@@ -598,7 +662,7 @@ function request_response(res, uri, options) {
 		if (options.noredirect) {
 
 			if (options.callback) {
-				options.callback(null, '', res.statusCode, res.headers, uri.host);
+				options.callback(null, '', res.statusCode, res.headers, uri.host, EMPTYOBJECT);
 				options.callback = null;
 			}
 
@@ -617,7 +681,7 @@ function request_response(res, uri, options) {
 		if (options.redirect > 3) {
 
 			if (options.callback) {
-				options.callback(new Error('Too many redirects.'), '', 0, undefined, uri.host);
+				options.callback(new Error('Too many redirects.'), '', 0, undefined, uri.host, EMPTYOBJECT);
 				options.callback = null;
 			}
 
@@ -663,6 +727,28 @@ function request_response(res, uri, options) {
 	options.length = +res.headers['content-length'] || 0;
 	options.evt && options.evt.$events.begin && options.evt.emit('begin', options.length);
 
+	// Shared cookies
+	if (options.cookies) {
+		var arr = (res.headers['set-cookie'] || '');
+
+		// Only the one value
+		if (arr && !(arr instanceof Array))
+			arr = [arr];
+
+		if (arr instanceof Array) {
+			for (var i = 0, length = arr.length; i < length; i++) {
+				var line = arr[i];
+				var end = line.indexOf(';');
+				if (end === -1)
+					end = line.length;
+				line = line.substring(0, end);
+				var index = line.indexOf('=');
+				if (index !== -1)
+					options.cookies[line.substring(0, index)] = decodeURIComponent(line.substring(index + 1));
+			}
+		}
+	}
+
 	res.on('data', function(chunk) {
 		var self = this;
 		if (options.max && self._bufferlength > options.max)
@@ -683,13 +769,13 @@ function request_response(res, uri, options) {
 		self._buffer = undefined;
 
 		if (options.evt) {
-			options.evt.$events.end && options.evt.emit('end', str, self.statusCode, self.headers, uri.host);
+			options.evt.$events.end && options.evt.emit('end', str, self.statusCode, self.headers, uri.host, options.cookies);
 			options.evt.removeAllListeners();
 			options.evt = null;
 		}
 
 		if (options.callback) {
-			options.callback(null, uri.method === 'HEAD' ? self.headers : str, self.statusCode, self.headers, uri.host);
+			options.callback(null, uri.method === 'HEAD' ? self.headers : str, self.statusCode, self.headers, uri.host, options.cookies);
 			options.callback = null;
 		}
 
@@ -835,7 +921,6 @@ exports.download = function(url, flags, data, callback, cookies, headers, encodi
 				case 'dnscache':
 					options.resolve = true;
 					break;
-
 			}
 		}
 	}
@@ -873,8 +958,7 @@ exports.download = function(url, flags, data, callback, cookies, headers, encodi
 
 	if (options.resolve) {
 		exports.resolve(url, function(err, u) {
-			if (!err)
-				uri.host = u.host;
+			!err && (uri.host = u.host);
 			download_call(uri, options);
 		});
 	} else
@@ -1352,7 +1436,7 @@ exports.extend_headers2 = function(first, second) {
  * @param {Boolean} skipFunctions It doesn't clone functions, optional --> default false.
  * @return {Object}
  */
-exports.clone = function(obj, skip, skipFunctions) {
+global.CLONE = exports.clone = function(obj, skip, skipFunctions) {
 
 	if (!obj)
 		return obj;
@@ -1511,16 +1595,24 @@ exports.isRelative = function(url) {
  * @param {String} end
  * @param {Function(value, index)} callback
  */
-exports.streamer = function(beg, end, callback, skip) {
+exports.streamer = function(beg, end, callback, skip, stream) {
 
 	if (typeof(end) === 'function') {
+		stream = skip;
 		skip = callback;
 		callback = end;
 		end = undefined;
 	}
 
+	if (typeof(skip) === 'object') {
+		stream = skip;
+		skip = 0;
+	}
+
 	var indexer = 0;
 	var buffer = exports.createBufferSize();
+	var canceled = false;
+	var fn;
 
 	if (skip === undefined)
 		skip = 0;
@@ -1531,9 +1623,9 @@ exports.streamer = function(beg, end, callback, skip) {
 
 	if (!end) {
 		var length = beg.length;
-		return function(chunk) {
+		fn = function(chunk) {
 
-			if (!chunk)
+			if (!chunk || canceled)
 				return;
 
 			CONCAT[0] = buffer;
@@ -1548,8 +1640,13 @@ exports.streamer = function(beg, end, callback, skip) {
 
 				if (skip)
 					skip--;
-				else
-					callback(buffer.toString('utf8', 0, index + length), indexer++);
+				else {
+					if (callback(buffer.toString('utf8', 0, index + length), indexer++) === false)
+						canceled = true;
+				}
+
+				if (canceled)
+					return;
 
 				buffer = buffer.slice(index + length);
 				index = buffer.indexOf(beg);
@@ -1557,6 +1654,9 @@ exports.streamer = function(beg, end, callback, skip) {
 					return;
 			}
 		};
+
+		stream && stream.on('end', () => fn(beg));
+		return fn;
 	}
 
 	var blength = beg.length;
@@ -1565,9 +1665,9 @@ exports.streamer = function(beg, end, callback, skip) {
 	var ei = -1;
 	var is = false;
 
-	return function(chunk) {
+	fn = function(chunk) {
 
-		if (!chunk)
+		if (!chunk || canceled)
 			return;
 
 		CONCAT[0] = buffer;
@@ -1591,8 +1691,13 @@ exports.streamer = function(beg, end, callback, skip) {
 
 			if (skip)
 				skip--;
-			else
-				callback(buffer.toString('utf8', bi, ei + elength), indexer++);
+			else {
+				if (callback(buffer.toString('utf8', bi, ei + elength), indexer++) === false)
+					canceled = true;
+			}
+
+			if (canceled)
+				return;
 
 			buffer = buffer.slice(ei + elength);
 			is = false;
@@ -1605,6 +1710,9 @@ exports.streamer = function(beg, end, callback, skip) {
 				return;
 		}
 	};
+
+	stream && stream.on('end', () => fn(end));
+	return fn;
 };
 
 /**
@@ -1748,15 +1856,17 @@ exports.getContentType = function(ext) {
  * @param {String} filename
  * @return {String}
  */
-exports.getExtension = function(filename) {
+exports.getExtension = function(filename, raw) {
 	var end = filename.length;
 	for (var i = filename.length; i > 1; i--) {
 		var c = filename[i];
 		if (c === ' ' || c === '?')
 			end = i;
-		else if (c === '.')
-			return filename.substring(i + 1, end);
-		else if (c === '/')
+		else if (c === '.') {
+			c = filename.substring(i + 1, end);
+			return raw ? c : c.toLowerCase();
+		}
+		else if (c === '/' || c === '\\')
 			return '';
 	}
 	return '';
@@ -1789,7 +1899,7 @@ exports.setContentType = function(ext, type) {
 		ext = ext.substring(1);
 
 	if (ext.length > 8) {
-		var tmp = regexpSTATIC.toString().replace(/\,\d+\}/, ',' + ext.length + '}').substring(1);
+		var tmp = regexpSTATIC.toString().replace(/,\d+\}/, ',' + ext.length + '}').substring(1);
 		regexpSTATIC = new RegExp(tmp.substring(0, tmp.length - 1));
 	}
 
@@ -1908,113 +2018,66 @@ exports.validate_builder = function(model, error, schema, collection, path, inde
 
 	for (var i = 0; i < properties.length; i++) {
 
-		var name = properties[i].toString();
+		var name = properties[i];
 		if (fields && fields.indexOf(name) === -1)
+			continue;
+
+		var TYPE = collection[schema].schema[name];
+
+		if (TYPE.can && !TYPE.can(model))
 			continue;
 
 		var value = model[name];
 		var type = typeof(value);
-		var TYPE = collection[schema].schema[name];
+		var prefix = entity.resourcePrefix ? (entity.resourcePrefix + name) : name;
 
 		if (value === undefined) {
-			error.add(pluspath + name, '@', current + name);
+			error.push(pluspath + name, '@', current + name, undefined, prefix);
 			continue;
 		} else if (type === 'function')
 			value = model[name]();
 
-		if (type !== 'object') {
-			if (Builders.isJoin(collection, name))
-				type = 'object';
-		}
+		if (TYPE.isArray) {
 
-		if (type === 'object' && !exports.isDate(value)) {
-			entity = collection[schema];
+			if (!(value instanceof Array) || !value.length) {
+				error.push(pluspath + name, '@', current + name, index, prefix);
+				continue;
+			}
 
-			if (entity) {
-				entity = entity.schema[name] || null;
-
-				if (entity === Date || entity === String || entity === Number || entity === Boolean) {
-					// Empty
-				} else if (entity && typeof(entity) === 'string') {
-
-					var isArray = entity[0] === '[';
-
-					if (!isArray) {
-						exports.validate_builder(value, error, schema, collection, current + name, index, undefined, pluspath);
-						continue;
-					}
-
-					entity = entity.substring(1, entity.length - 1).trim();
-
-					if (!(value instanceof Array)) {
-						error.add(pluspath + name, (pluspath ? '@' + name : '@'), current + name, index);
-						continue;
-					}
-
-					// The schema not exists
-					if (collection[entity] === undefined) {
-
-						var result2 = prepare(name, value, current + name, model, schema, TYPE);
-						if (result2 === undefined) {
-							result2 = validate_builder_default(name, value, TYPE);
-							if (result2)
-								continue;
-						}
-
-						type = typeof(result2);
-
+			for (var j = 0, jl = value.length; j < jl; j++) {
+				if (TYPE.type === 7) {
+					// Another schema
+					exports.validate_builder(value[j], error, TYPE.raw, collection, current + name + '[' + j + ']', j, undefined, pluspath);
+				} else {
+					// Basic types
+					var result = TYPE.validate ? TYPE.validate(value[j], model) : prepare(name, value, current + name + '[' + j + ']', model, schema, TYPE);
+					if (result === undefined) {
+						result = validate_builder_default(name, value[j], TYPE);
+						if (result)
+							continue;
+						type = typeof(result);
 						if (type === 'string') {
-							error.add(pluspath + name, result2, current + name, index);
-							continue;
-						}
-
-						if (type === 'boolean' && !result2) {
-							error.add(pluspath + name, (pluspath ? '@' + name : '@'), current + name, index);
-							continue;
-						}
-
-						if (result2.isValid === false)
-							error.add(pluspath + name, result2.error, current + name, index);
-
-						continue;
+							if (result[0] === '@')
+								error.push(pluspath + name, '@', current + name + '[' + j + ']', j, entity.resourcePrefix + result.substring(1));
+							else
+								error.push(pluspath + name, result, current + name + '[' + j + ']', j, prefix);
+						} else if (type === 'boolean') {
+							!result && error.push(pluspath + name, '@', current + name + '[' + j + ']', j, prefix);
+						} else if (result.isValid === false)
+							error.push(pluspath + name, result.error, current + name + '[' + j + ']', j, prefix);
 					}
-
-					var result3 = prepare(name, value, current + name, model, schema, TYPE);
-					if (result3 === undefined) {
-						result3 = validate_builder_default(name, value, TYPE);
-						if (result3)
-							continue;
-					}
-
-					if (result3 !== undefined) {
-
-						type = typeof(result3);
-
-						if (type === 'string') {
-							error.add(pluspath + name, result3, current + name, index);
-							continue;
-						}
-
-						if (type === 'boolean' && !result3) {
-							error.add(pluspath + name, (pluspath ? '@' + name : '@'), current + name, index);
-							continue;
-						}
-
-						if (result3.isValid === false) {
-							error.add(pluspath + name, result3.error, current + name, index);
-							continue;
-						}
-					}
-
-					var sublength = value.length;
-					for (var j = 0; j < sublength; j++)
-						exports.validate_builder(value[j], error, entity, collection, current + name, j, undefined, pluspath);
-					continue;
 				}
 			}
+			continue;
 		}
 
-		var result = prepare(name, value, current + name, model, schema, TYPE);
+		if (TYPE.type === 7) {
+			// Another schema
+			exports.validate_builder(value, error, TYPE.raw, collection, current + name, undefined, undefined, pluspath);
+			continue;
+		}
+
+		var result = TYPE.validate ? TYPE.validate(value, model) : prepare(name, value, current + name, model, schema, TYPE);
 		if (result === undefined) {
 			result = validate_builder_default(name, value, TYPE);
 			if (result)
@@ -2024,18 +2087,14 @@ exports.validate_builder = function(model, error, schema, collection, path, inde
 		type = typeof(result);
 
 		if (type === 'string') {
-			error.add(pluspath + name, result, current + name, index);
-			continue;
-		}
-
-		if (type === 'boolean') {
-			if (!result)
-				error.add(pluspath + name, (pluspath ? '@' + name : '@'), current + name, index);
-			continue;
-		}
-
-		if (result.isValid === false)
-			error.add(pluspath + name, result.error, current + name, index);
+			if (result[0] === '@')
+				error.push(pluspath + name, '@', current + name, index, entity.resourcePrefix + result.substring(1));
+			else
+				error.push(pluspath + name, result, current + name, index, prefix);
+		} else if (type === 'boolean') {
+			!result && error.push(pluspath + name, '@', current + name, index, prefix);
+		} else if (result.isValid === false)
+			error.push(pluspath + name, result.error, current + name, index, prefix);
 	}
 
 	return error;
@@ -2297,17 +2356,21 @@ exports.distance = function(lat1, lon1, lat2, lon2) {
  * @param {Function(filename),isDirectory or String or RegExp} filter Custom filter (optional).
  */
 exports.ls = function(path, callback, filter) {
+
 	var filelist = new FileList();
+	var tmp;
+
 	filelist.onComplete = callback;
 
 	if (typeof(filter) === 'string') {
-		filter = filter.toLowerCase();
-		filter.onFilter = function(filename, is) {
-			return is ? true : filename.toLowerCase().indexOf(filter);
+		tmp = filter.toLowerCase();
+		filter.onFilter = function(filename, is, relative) {
+			return is ? true : relative.toLowerCase().indexOf(tmp);
 		};
 	} else if (exports.isRegExp(filter)) {
+		tmp = filter;
 		filter.onFilter = function(filename, is) {
-			return is ? true : filter.test(filename);
+			return is ? true : tmp.test(filename);
 		};
 	} else
 		filelist.onFilter = filter || null;
@@ -2323,17 +2386,20 @@ exports.ls = function(path, callback, filter) {
  */
 exports.ls2 = function(path, callback, filter) {
 	var filelist = new FileList();
+	var tmp;
+
 	filelist.advanced = true;
 	filelist.onComplete = callback;
 
 	if (typeof(filter) === 'string') {
-		filter = filter.toLowerCase();
+		tmp = filter.toLowerCase();
 		filter.onFilter = function(filename, is) {
-			return is ? true : filename.toLowerCase().indexOf(filter);
+			return is ? true : filename.toLowerCase().indexOf(tmp);
 		};
 	} else if (exports.isRegExp(filter)) {
+		tmp = filter;
 		filter.onFilter = function(filename, is) {
-			return is ? true : filter.test(filename);
+			return is ? true : tmp.test(filename);
 		};
 	} else
 		filelist.onFilter = filter || null;
@@ -2346,7 +2412,7 @@ Date.prototype.add = function(type, value) {
 	var self = this;
 
 	if (type.constructor === Number)
-		return new Date(self.getTime() + (type - type%1));
+		return new Date(self.getTime() + (type - type % 1));
 
 	if (value === undefined) {
 		var arr = type.split(' ');
@@ -2501,14 +2567,14 @@ Date.prototype.extend = function(date) {
 			tmp = +arr[0];
 			dt.setFullYear(tmp);
 
-			if (arr[1]) {
-				tmp = +arr[1];
-				!isNaN(tmp) && dt.setMonth(tmp - 1);
-			}
-
 			if (arr[2]) {
 				tmp = +arr[2];
 				!isNaN(tmp) && dt.setDate(tmp);
+			}
+
+			if (arr[1]) {
+				tmp = +arr[1];
+				!isNaN(tmp) && dt.setMonth(tmp - 1);
 			}
 
 			continue;
@@ -2580,7 +2646,13 @@ Date.compare = function(d1, d2) {
  */
 Date.prototype.format = function(format, resource) {
 
-	var self = this;
+	if (!format)
+		return this.getFullYear() + '-' + (this.getMonth() + 1).toString().padLeft(2, '0') + '-' + this.getDate().toString().padLeft(2, '0') + 'T' + this.getHours().toString().padLeft(2, '0') + ':' + this.getMinutes().toString().padLeft(2, '0') + ':' + this.getSeconds().toString().padLeft(2, '0') + '.' + this.getMilliseconds().toString().padLeft(3, '0') + 'Z';
+
+	if (datetimeformat[format])
+		return datetimeformat[format](this, resource);
+
+	var key = format;
 	var half = false;
 
 	if (format && format[0] === '!') {
@@ -2588,67 +2660,74 @@ Date.prototype.format = function(format, resource) {
 		format = format.substring(1);
 	}
 
-	if (!format)
-		return self.getFullYear() + '-' + (self.getMonth() + 1).toString().padLeft(2, '0') + '-' + self.getDate().toString().padLeft(2, '0') + 'T' + self.getHours().toString().padLeft(2, '0') + ':' + self.getMinutes().toString().padLeft(2, '0') + ':' + self.getSeconds().toString().padLeft(2, '0') + '.' + self.getMilliseconds().toString().padLeft(3, '0') + 'Z';
+	var beg = '\'+';
+	var end = '+\'';
+	var before = [];
 
-	var h = self.getHours();
+	var ismm = false;
+	var isdd = false;
+	var isww = false;
 
-	if (half) {
-		if (h >= 12)
-			h -= 12;
-	}
-
-	return format.replace(regexpDATEFORMAT, function(key) {
+	format = format.replace(regexpDATEFORMAT, function(key) {
 		switch (key) {
 			case 'yyyy':
-				return self.getFullYear();
+				return beg + 'd.getFullYear()' + end;
 			case 'yy':
-				return self.getFullYear().toString().substring(2);
+				return beg + 'd.getFullYear().toString().substring(2)' + end;
 			case 'MMM':
-				var m = MONTHS[self.getMonth()];
-				return (F.resource(resource, m) || m).substring(0, 3);
+				ismm = true;
+				return beg + '(F.resource(resource, mm) || mm).substring(0, 3)' + end;
 			case 'MMMM':
-				var m = MONTHS[self.getMonth()];
-				return (F.resource(resource, m) || m);
+				ismm = true;
+				return beg + '(F.resource(resource, mm) || mm)' + end;
 			case 'MM':
-				return (self.getMonth() + 1).toString().padLeft(2, '0');
+				return beg + '(d.getMonth() + 1).toString().padLeft(2, \'0\')' + end;
 			case 'M':
-				return (self.getMonth() + 1);
+				return beg + '(d.getMonth() + 1)' + end;
 			case 'ddd':
-				var m = DAYS[self.getDay()];
-				return (F.resource(resource, m) || m).substring(0, 3);
+				isdd = true;
+				return beg + '(F.resource(resource, dd) || dd).substring(0, 2).toUpperCase()' + end;
 			case 'dddd':
-				var m = DAYS[self.getDay()];
-				return (F.resource(resource, m) || m);
+				isdd = true;
+				return beg + '(F.resource(resource, dd) || dd)' + end;
 			case 'dd':
-				return self.getDate().toString().padLeft(2, '0');
+				return beg + 'd.getDate().toString().padLeft(2, \'0\')' + end;
 			case 'd':
-				return self.getDate();
+				return beg + 'd.getDate()' + end;
 			case 'HH':
 			case 'hh':
-				return h.toString().padLeft(2, '0');
+				return beg + (half ? 'framework_utils.$pmam(d.getHours()).toString().padLeft(2, \'0\')' : 'd.getHours().toString().padLeft(2, \'0\')') + end;
 			case 'H':
 			case 'h':
-				return self.getHours();
+				return beg + (half ? 'framework_utils(d.getHours())' : 'd.getHours()') + end;
 			case 'mm':
-				return self.getMinutes().toString().padLeft(2, '0');
+				return beg + 'd.getMinutes().toString().padLeft(2, \'0\')' + end;
 			case 'm':
-				return self.getMinutes();
+				return beg + 'd.getMinutes()' + end;
 			case 'ss':
-				return self.getSeconds().toString().padLeft(2, '0');
+				return beg + 'd.getSeconds().toString().padLeft(2, \'0\')' + end;
 			case 's':
-				return self.getSeconds();
+				return beg + 'd.getSeconds()' + end;
 			case 'w':
 			case 'ww':
-				var tmp = new Date(+self);
-				tmp.setHours(0, 0, 0);
-				tmp.setDate(tmp.getDate() + 4 - (tmp.getDay() || 7));
-				tmp = Math.ceil((((tmp - new Date(tmp.getFullYear(), 0, 1)) / 8.64e7) + 1) / 7);
-				return key === 'ww' ? tmp.toString().padLeft(2, '0') : tmp;
+				isww = true;
+				return beg + (key === 'ww' ? 'ww.toString().padLeft(2, \'0\')' : 'ww') + end;
 			case 'a':
-				return self.getHours() >= 12 ? 'PM' : 'AM';
+				var b = "'PM':'AM'";
+				return beg + '(d.getHours() >= 12 ? ' + b + ')' + end;
 		}
 	});
+
+	ismm && before.push('var mm = framework_utils.MONTHS[d.getMonth()];');
+	isdd && before.push('var dd = framework_utils.DAYS[d.getDay()];');
+	isww && before.push('var ww = new Date(+d);ww.setHours(0, 0, 0);ww.setDate(ww.getDate() + 4 - (ww.getDay() || 7));ww = Math.ceil((((ww - new Date(ww.getFullYear(), 0, 1)) / 8.64e7) + 1) / 7);');
+
+	datetimeformat[key] = new Function('d', 'resource', before.join('\n') + 'return \'' + format + '\';');
+	return datetimeformat[key](this, resource);
+};
+
+exports.$pmam = function(value) {
+	return value >= 12 ? value - 12 : value;
 };
 
 Date.prototype.toUTC = function(ticks) {
@@ -2741,9 +2820,7 @@ String.prototype.replacer = function(find, text) {
  * @return {String}
  */
 String.prototype.hash = function(type, salt) {
-	var str = this;
-	if (salt)
-		str += salt;
+	var str = salt ? this + salt : this;
 	switch (type) {
 		case 'md5':
 			return str.md5();
@@ -2758,15 +2835,14 @@ String.prototype.hash = function(type, salt) {
 	}
 };
 
-function string_hash(s) {
-	var hash = 0, i, char;
+function string_hash(s, convert) {
+	var hash = 0;
 	if (s.length === 0)
-		return hash;
-	var l = s.length;
-	for (i = 0; i < l; i++) {
-		char = s.charCodeAt(i);
+		return convert ? '' : hash;
+	for (var i = 0, l = s.length; i < l; i++) {
+		var char = s.charCodeAt(i);
 		hash = ((hash << 5) - hash) + char;
-		hash |= 0; // Convert to 32bit integer
+		hash |= 0;
 	}
 	return hash;
 }
@@ -3048,7 +3124,7 @@ String.prototype.contains = function(value, mustAll) {
  * @return {Number}
  */
 String.prototype.localeCompare2 = function(value) {
-	return this.removeDiacritics().localeCompare(value.removeDiacritics());
+	return COMPARER(this, value);
 };
 
 /**
@@ -3101,6 +3177,9 @@ String.prototype.parseConfig = function(def) {
 			case 'boolean':
 			case 'bool':
 				obj[name] = value.parseBoolean();
+				break;
+			case 'config':
+				obj[name] = F.config[value];
 				break;
 			case 'eval':
 			case 'object':
@@ -3179,6 +3258,13 @@ String.prototype.urlEncode = function() {
 
 String.prototype.urlDecode = function() {
 	return decodeURIComponent(this);
+};
+
+String.prototype.arg = function(obj) {
+	return this.replace(regexpARG, function(text) {
+		var val = obj[text.substring(1, text.length - 1).trim()];
+		return val == null ? text : val;
+	});
 };
 
 String.prototype.params = function(obj) {
@@ -3319,7 +3405,7 @@ String.prototype.parseInt2 = function(def) {
 
 String.prototype.parseFloat2 = function(def) {
 	var num = this.match(regexpFLOAT);
-	return num ? +num[0].toString().replace(/\,/g, '.') : def || 0;
+	return num ? +num[0].toString().replace(/,/g, '.') : def || 0;
 };
 
 String.prototype.parseBool = String.prototype.parseBoolean = function() {
@@ -4247,7 +4333,7 @@ Array.prototype.last = function(def) {
 	return item === undefined ? def : item;
 };
 
-Array.prototype.quicksort = Array.prototype.orderBy = function(name, asc, maxlength) {
+Array.prototype.quicksort = Array.prototype.orderBy = function(name, asc) {
 
 	var length = this.length;
 	if (!length || length === 1)
@@ -4257,9 +4343,6 @@ Array.prototype.quicksort = Array.prototype.orderBy = function(name, asc, maxlen
 		asc = name;
 		name = undefined;
 	}
-
-	if (maxlength === undefined)
-		maxlength = 3;
 
 	if (asc === undefined)
 		asc = true;
@@ -4295,7 +4378,7 @@ Array.prototype.quicksort = Array.prototype.orderBy = function(name, asc, maxlen
 
 		// String
 		if (type === 1) {
-			return va && vb ? (asc ? va.substring(0, maxlength).removeDiacritics().localeCompare(vb.substring(0, maxlength).removeDiacritics()) : vb.substring(0, maxlength).removeDiacritics().localeCompare(va.substring(0, maxlength).removeDiacritics())) : 0;
+			return va && vb ? (asc ? COMPARER(va, vb) : COMPARER(vb, va)) : 0;
 		} else if (type === 2) {
 			return va > vb ? (asc ? 1 : -1) : va < vb ? (asc ? -1 : 1) : 0;
 		} else if (type === 3) {
@@ -4444,52 +4527,53 @@ Array.prototype.remove = function(cb, value) {
 	return arr;
 };
 
-Array.prototype.wait = Array.prototype.waitFor = function(onItem, callback, thread) {
+Array.prototype.wait = Array.prototype.waitFor = function(onItem, callback, thread, tmp) {
 
 	var self = this;
 	var init = false;
 
 	// INIT
-	if (!onItem.$index) {
-		onItem.$pending = 0;
-		onItem.$index = 0;
-		init = true;
-		if (typeof(callback) === 'number') {
-			var tmp = thread;
+	if (!tmp) {
+
+		if (typeof(callback) !== 'function') {
 			thread = callback;
-			callback = tmp;
+			callback = null;
 		}
+
+		tmp = {};
+		tmp.pending = 0;
+		tmp.index = 0;
+		tmp.thread = thread;
+
+		// thread === Boolean then array has to be removed item by item
+
+		init = true;
 	}
 
-	if (thread === undefined)
-		thread = 1;
-
-	var item = thread === true ? self.shift() : self[onItem.$index];
-	onItem.$index++;
-
+	var item = thread === true ? self.shift() : self[tmp.index++];
 	if (item === undefined) {
-		if (onItem.$pending)
-			return self;
-		callback && callback();
-		onItem.$index = 0;
+		if (!tmp.pending) {
+			callback && callback();
+			tmp.cancel = true;
+		}
 		return self;
 	}
 
-	onItem.$pending++;
-	onItem.call(self, item, () => setImmediate(next_wait, self, onItem, callback, thread));
+	tmp.pending++;
+	onItem.call(self, item, () => setImmediate(next_wait, self, onItem, callback, thread, tmp), tmp.index);
 
-	if (!init || thread === true)
+	if (!init || tmp.thread === 1)
 		return self;
 
-	for (var i = 1; i < thread; i++)
-		self.wait(onItem, callback, 0);
+	for (var i = 1; i < tmp.thread; i++)
+		self.wait(onItem, callback, 1, tmp);
 
 	return self;
 };
 
-function next_wait(self, onItem, callback, thread) {
-	onItem.$pending--;
-	self.wait(onItem, callback, thread);
+function next_wait(self, onItem, callback, thread, tmp) {
+	tmp.pending--;
+	self.wait(onItem, callback, thread, tmp);
 }
 
 /**
@@ -4497,7 +4581,7 @@ function next_wait(self, onItem, callback, thread) {
  * @param {Function} callback Optional
  * @return {Array}
  */
-Array.prototype.async = function(thread, callback) {
+Array.prototype.async = function(thread, callback, pending) {
 
 	var self = this;
 
@@ -4507,15 +4591,15 @@ Array.prototype.async = function(thread, callback) {
 	} else if (thread === undefined)
 		thread = 1;
 
-	if (self.$pending === undefined)
-		self.$pending = 0;
+	if (pending === undefined)
+		pending = 0;
 
 	var item = self.shift();
 	if (item === undefined) {
-		if (self.$pending)
-			return self;
-		self.$pending = undefined;
-		callback && callback();
+		if (!pending) {
+			pending = undefined;
+			callback && callback();
+		}
 		return self;
 	}
 
@@ -4524,11 +4608,11 @@ Array.prototype.async = function(thread, callback) {
 		if (i)
 			item = self.shift();
 
-		self.$pending++;
+		pending++;
 		item(function() {
 			setImmediate(function() {
-				self.$pending--;
-				self.async(1, callback);
+				pending--;
+				self.async(1, callback, pending);
 			});
 		});
 	}
@@ -4541,37 +4625,15 @@ Array.prototype.randomize = function() {
 	return this.random();
 };
 
+// Fisher-Yates shuffle
 Array.prototype.random = function() {
-
-	var self = this;
-	var random = (Math.floor(Math.random() * 100000000) * 10).toString();
-	var index = 0;
-	var old = 0;
-
-	self.sort(function() {
-
-		var c = random[index++];
-
-		if (c === undefined) {
-			c = random[0];
-			index = 0;
-		}
-
-		if (old > c) {
-			old = c;
-			return -1;
-		}
-
-		if (old === c) {
-			old = c;
-			return 0;
-		}
-
-		old = c;
-		return 1;
-	});
-
-	return self;
+	for (var i = this.length - 1; i > 0; i--) {
+		var j = Math.floor(Math.random() * (i + 1));
+		var temp = this[i];
+		this[i] = this[j];
+		this[j] = temp;
+	}
+	return this;
 };
 
 Array.prototype.limit = function(max, fn, callback, index) {
@@ -4654,6 +4716,14 @@ Array.prototype.unique = function(property) {
 	}
 
 	return result;
+};
+
+ArrayBuffer.prototype.toBuffer = function() {
+	var buf = new Buffer(this.byteLength);
+	var view = new Uint8Array(this);
+	for (var i = 0, length = buf.length; i < length; ++i)
+		buf[i] = view[i];
+	return buf;
 };
 
 function AsyncTask(owner, name, fn, cb, waiting) {
@@ -5015,18 +5085,21 @@ FileList.prototype.stat = function(path) {
 		if (err)
 			return self.next();
 
-		if (stats.isDirectory() && (!self.onFilter || self.onFilter(path, true))) {
-			self.directory.push(path);
-			self.pendingDirectory.push(path);
-			self.next();
-			return;
-		}
-
-		if (!self.onFilter || self.onFilter(path, false))
+		if (stats.isDirectory()) {
+			path = self.clean(path);
+			if (!self.onFilter || self.onFilter(path, true)) {
+				self.directory.push(path);
+				self.pendingDirectory.push(path);
+			}
+		} else if (!self.onFilter || self.onFilter(path, false))
 			self.file.push(self.advanced ? { filename: path, stats: stats } : path);
 
 		self.next();
 	});
+};
+
+FileList.prototype.clean = function(path) {
+	return path[path.length - 1] === '/' ? path : path + '/';
 };
 
 FileList.prototype.next = function() {
@@ -5044,7 +5117,7 @@ FileList.prototype.next = function() {
 		return;
 	}
 
-	self.onComplete(self.advanced ? self.file.filename : self.file, self.directory);
+	self.onComplete(self.file, self.directory);
 };
 
 exports.Async = Async;
@@ -5199,15 +5272,34 @@ exports.async = function(fn, isApply) {
 
 // MIT
 // Written by Jozef Gula
+// Optimized by Peter Sirka
+const CACHE_GML1 = [null, null, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+const CACHE_GML2 = [null, null, null, null, null, null, null, null];
 exports.getMessageLength = function(data, isLE) {
 
 	var length = data[1] & 0x7f;
 
-	if (length === 126)
-		return data.length < 4 ? -1 : converBytesToInt64([data[3], data[2], 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], 0, isLE);
+	if (length === 126) {
+		if (data.length < 4)
+			return -1;
+		CACHE_GML1[0] = data[3];
+		CACHE_GML1[1] = data[2];
+		return converBytesToInt64(CACHE_GML1, 0, isLE);
+	}
 
-	if (length === 127)
-		return data.Length < 10 ? -1 : converBytesToInt64([data[9], data[8], data[7], data[6], data[5], data[4], data[3], data[2]], 0, isLE);
+	if (length === 127) {
+		if (data.Length < 10)
+			return -1;
+		CACHE_GML2[0] = data[9];
+		CACHE_GML2[1] = data[8];
+		CACHE_GML2[2] = data[7];
+		CACHE_GML2[3] = data[6];
+		CACHE_GML2[4] = data[5];
+		CACHE_GML2[5] = data[4];
+		CACHE_GML2[6] = data[3];
+		CACHE_GML2[7] = data[2];
+		return converBytesToInt64(CACHE_GML2, 0, isLE);
+	}
 
 	return length;
 };
@@ -5227,20 +5319,18 @@ function queue_next(name) {
 		return;
 
 	item.running--;
+
 	if (item.running < 0)
 		item.running = 0;
 
-	if (!item.pending.length)
-		return;
-
-	var fn = item.pending.shift();
-	if (!fn) {
-		item.running = 0;
-		return;
+	if (item.pending.length) {
+		var fn = item.pending.shift();
+		if (fn) {
+			item.running++;
+			setImmediate(queue_next_callback, fn, name);
+		} else
+			item.running = 0;
 	}
-
-	item.running++;
-	setImmediate(queue_next_callback, fn, name);
 }
 
 function queue_next_callback(fn, name) {
@@ -5331,7 +5421,7 @@ exports.set = function(obj, path, value) {
 		break;
 	}
 
-	var fn = (new Function('w', 'a', 'b', builder.join(';') + ';w.' + path.replace(/\'/, '\'') + '=a;return a'));
+	var fn = (new Function('w', 'a', 'b', builder.join(';') + ';w.' + path.replace(/'/, '\'') + '=a;return a'));
 	F.temporary.other[cachekey] = fn;
 	fn(obj, value, path);
 };
@@ -5356,7 +5446,7 @@ exports.get = function(obj, path) {
 		builder.push('if(!w.' + p + ')return');
 	}
 
-	var fn = (new Function('w', builder.join(';') + ';return w.' + path.replace(/\'/, '\'')));
+	var fn = (new Function('w', builder.join(';') + ';return w.' + path.replace(/'/, '\'')));
 	F.temporary.other[cachekey] = fn;
 	return fn(obj);
 };
@@ -5551,6 +5641,8 @@ Chunker.prototype.destroy = function() {
 exports.chunker = function(name, max) {
 	return new Chunker(name, max);
 };
+
+exports.Chunker = Chunker;
 
 exports.ObjectToArray = function(obj) {
 	if (obj == null)

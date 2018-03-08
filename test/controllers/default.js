@@ -56,7 +56,7 @@ exports.install = function() {
 	F.route('/cookie/', view_cookie);
 	F.route('/layout/', view_layout);
 	F.route('/custom/', viewCustomTesting);
-	F.route('/views/', viewViews, ["#middleware"]);
+	F.route('/views/', viewViews, ['#middleware']);
 	F.route('/view-notfound/', viewError);
 	F.route('/views-if/', viewViewsIf);
 	F.route('/{a}/', viewRouteA);
@@ -574,6 +574,8 @@ function viewViews() {
 	assert.ok(output.contains('#absolute1=<script src="http://127.0.0.1:8001/js/filename.js"></script>#'), name + 'absolute problem without hostname');
 	assert.ok(output.contains('#absolute2=<script src="https://www.google.sk/js/filename.js"></script>#'), name + 'aboslute problem with hostname');
 	assert.ok(output.contains('#absolute3=<script src="http://localhost:8000/js/default.js"></script><script src="http://localhost:8000/js/home.js"></script>#'), name + 'aboslute problem array + with hostname');
+	assert.ok(output.contains('#CONFIGNAME1=Total.js#'), name + 'inline config value with value');
+	assert.ok(output.contains('#CONFIGNAME2=#'), name + 'inline config value without value');
 
 	assert.ok(output.contains('#d429c9c776604a9e15d04d9bd90dba27e0155965=a+b+c#'), name + 'https://github.com/totaljs/framework/commit/d429c9c776604a9e15d04d9bd90dba27e0155965');
 
@@ -625,8 +627,10 @@ function viewRouteA() {
 	self.plain('OK');
 }
 
-function viewRouteAB() {
+function viewRouteAB(a, b) {
 	var self = this;
+	var params = self.params;
+	assert.ok(params.a === a, params.b === b, 'controller.params');
 	assert.ok(self.url === '/c/b/', 'routing: viewRouteAB');
 	self.plain('OK');
 }
